@@ -152,6 +152,11 @@ post =
 tests = ['luks_sanity']
 tags = ['functional', 'luks']
 
+[tests/functional/fiemap]
+tests = ['fiemap_sync', 'fiemap_flags', 'fiemap_delalloc', 'fiemap_free',
+    'fiemap_copies', 'fiemap_nomerge', 'fiemap_holes_sanity']
+tags = ['functional', 'fiemap']
+
 [tests/functional/mmap:Linux]
 tests = ['mmap_libaio_001_pos', 'mmap_sync_001_pos']
 tags = ['functional', 'mmap']

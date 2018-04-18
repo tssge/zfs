@@ -8,6 +8,7 @@
 /devname2devid
 /dir_rd_update
 /draid
+/fiemap
 /file_fadvise
 /file_append
 /file_check
