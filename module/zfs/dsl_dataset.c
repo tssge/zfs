@@ -449,6 +449,10 @@ dsl_dataset_hold_obj_flags(dsl_pool_t *dp, uint64_t dsobj,
 
 	ASSERT(dsl_pool_config_held(dp));
 
+	err = spa_operation_interrupted(dp->dp_spa);
+	if (err != 0)
+		return (err);
+
 	err = dmu_bonus_hold(mos, dsobj, tag, &dbuf);
 	if (err != 0)
 		return (err);
@@ -741,6 +745,92 @@ boolean_t
 dsl_dataset_long_held(dsl_dataset_t *ds)
 {
 	return (!refcount_is_zero(&ds->ds_longholds));
+}
+
+/**
+ * Cancellation interfaces for send/receive streams.
+ *
+ * If a send/recv wins the race with a forced destroy, their pipes will be
+ * revoked, and the destroy will wait for all ioctl references to drop.
+ *
+ * If a forced destroy wins the race, the send/receive will fail to start.
+ */
+
+#ifdef _KERNEL
+/* Cancel any outstanding send streams for the dataset. */
+static int
+dsl_dataset_sendstreams_cancel(dsl_dataset_t *ds)
+{
+	dmu_sendarg_t *dsa;
+	int err = 0;
+
+	mutex_enter(&ds->ds_sendstream_lock);
+	dsa = list_head(&ds->ds_sendstreams);
+	while (err == 0 && dsa != NULL) {
+		if (dsa->dsa_fp != NULL)
+			err = fo_close(dsa->dsa_fp, curthread);
+		dsa = list_next(&ds->ds_sendstreams, dsa);
+	}
+	mutex_exit(&ds->ds_sendstream_lock);
+
+	return (err);
+}
+
+/*
+ * Cancel the receive stream for the dataset, if there is one.
+ */
+static int
+dsl_dataset_recvstream_cancel(dsl_dataset_t *ds)
+{
+	dmu_recv_cookie_t *drc;
+	int err = 0;
+
+	drc = ds->ds_receiver;
+	if (drc != NULL && drc->drc_fp != NULL) {
+		err = fo_close(drc->drc_fp, curthread);
+	}
+
+	return (err);
+}
+#endif
+
+/* dsl_dataset_{send,recv}stream_cancel callback for dmu_objset_traverse. */
+static int
+dsl_dataset_sendrecv_cancel_cb(const char *osname, void *arg)
+{
+	int err = 0;
+#ifdef _KERNEL
+	objset_t *os;
+
+	if (dmu_objset_hold(osname, FTAG, &os) != 0) {
+		/* Objset no longer exists, nothing to cancel. */
+		return (0);
+	}
+
+	if (os->os_dsl_dataset != NULL) {
+		err = dsl_dataset_sendstreams_cancel(os->os_dsl_dataset);
+		if (err == 0)
+			err = dsl_dataset_recvstream_cancel(os->os_dsl_dataset);
+	}
+
+#else
+	fprintf(stderr, "%s: returning EOPNOTSUPP\n", __func__);
+	err = EOPNOTSUPP;
+#endif
+	return (err);
+}
+
+/*
+ * Cancel all outstanding sends/receives.  Used when the pool is trying to
+ * forcibly exit.  Iterates on all datasets in the MOS and cancels any
+ * running sends/receives by interrupting them.
+ */
+int
+dsl_dataset_sendrecv_cancel_all(spa_t *spa)
+{
+
+	return (dmu_objset_find(spa_name(spa), dsl_dataset_sendrecv_cancel_cb,
+	    NULL, DS_FIND_CHILDREN|DS_FIND_SNAPSHOTS));
 }
 
 void

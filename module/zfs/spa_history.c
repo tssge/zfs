@@ -392,7 +392,7 @@ spa_history_log_nvl(spa_t *spa, nvlist_t *nvl)
 	}
 
 	tx = dmu_tx_create_dd(spa_get_dsl(spa)->dp_mos_dir);
-	err = dmu_tx_assign(tx, TXG_WAIT);
+	err = dmu_tx_assign(tx, TXG_WAIT | TXG_NOSUSPEND);
 	if (err) {
 		dmu_tx_abort(tx);
 		return (err);

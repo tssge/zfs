@@ -668,10 +668,12 @@ txg_delay(dsl_pool_t *dp, uint64_t txg, hrtime_t delay, hrtime_t resolution)
 	mutex_exit(&tx->tx_sync_lock);
 }
 
-void
-txg_wait_synced(dsl_pool_t *dp, uint64_t txg)
+int
+txg_wait_synced_flags(dsl_pool_t *dp, uint64_t txg, uint64_t flags)
 {
 	tx_state_t *tx = &dp->dp_tx;
+	int error = 0;
+	spa_t *spa = dp->dp_spa;
 
 	ASSERT(!dsl_pool_config_held(dp));
 
@@ -683,14 +685,28 @@ txg_wait_synced(dsl_pool_t *dp, uint64_t txg)
 		tx->tx_sync_txg_waiting = txg;
 	dprintf("txg=%llu quiesce_txg=%llu sync_txg=%llu\n",
 	    txg, tx->tx_quiesce_txg_waiting, tx->tx_sync_txg_waiting);
-	while (tx->tx_synced_txg < txg) {
+	while (error == 0 && tx->tx_synced_txg < txg) {
 		dprintf("broadcasting sync more "
 		    "tx_synced=%llu waiting=%llu dp=%p\n",
 		    tx->tx_synced_txg, tx->tx_sync_txg_waiting, dp);
 		cv_broadcast(&tx->tx_sync_more_cv);
-		cv_wait(&tx->tx_sync_done_cv, &tx->tx_sync_lock);
+		if (flags & TXG_NOSUSPEND) {
+			mutex_enter(&spa->spa_suspend_lock);
+			error = spa_suspended(spa) ? EAGAIN : 0;
+			mutex_exit(&spa->spa_suspend_lock);
+		}
+		if (error == 0)
+			cv_wait(&tx->tx_sync_done_cv, &tx->tx_sync_lock);
 	}
 	mutex_exit(&tx->tx_sync_lock);
+	return (error);
+}
+
+void
+txg_wait_synced(dsl_pool_t *dp, uint64_t txg)
+{
+
+	(void) txg_wait_synced_flags(dp, txg, 0);
 }
 
 void
@@ -997,6 +1013,7 @@ EXPORT_SYMBOL(txg_rele_to_quiesce);
 EXPORT_SYMBOL(txg_rele_to_sync);
 EXPORT_SYMBOL(txg_register_callbacks);
 EXPORT_SYMBOL(txg_delay);
+EXPORT_SYMBOL(txg_wait_synced_flags);
 EXPORT_SYMBOL(txg_wait_synced);
 EXPORT_SYMBOL(txg_wait_open);
 EXPORT_SYMBOL(txg_wait_callbacks);

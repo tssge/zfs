@@ -4409,6 +4409,16 @@ spa_open_common(const char *pool, spa_t **spapp, void *tag, nvlist_t *nvpolicy,
 		return (SET_ERROR(ENOENT));
 	}
 
+	/*
+	 * If the pool is exiting, only the thread forcing it to exit may
+	 * open new references to it.
+	 */
+	if (spa_exiting(spa)) {
+		if (locked)
+			mutex_exit(&spa_namespace_lock);
+		return (SET_ERROR(ENXIO));
+	}
+
 	if (spa->spa_state == POOL_STATE_UNINITIALIZED) {
 		zpool_load_policy_t policy;
 
@@ -5582,6 +5592,15 @@ spa_tryimport(nvlist_t *tryconfig)
 	return (config);
 }
 
+static void
+spa_set_killer(spa_t *spa, void *killer)
+{
+
+	mutex_enter(&spa->spa_evicting_os_lock);
+	spa->spa_killer = killer;
+	mutex_exit(&spa->spa_evicting_os_lock);
+}
+
 /*
  * Pool export/destroy
  *
@@ -5595,7 +5614,9 @@ static int
 spa_export_common(char *pool, int new_state, nvlist_t **oldconfig,
     boolean_t force, boolean_t hardforce)
 {
+	int error;
 	spa_t *spa;
+	boolean_t force_removal, modifying;
 
 	if (oldconfig)
 		*oldconfig = NULL;
@@ -5609,13 +5630,47 @@ spa_export_common(char *pool, int new_state, nvlist_t **oldconfig,
 		return (SET_ERROR(ENOENT));
 	}
 
+	/* XXX Should this be chained instead of rejected? */
+	if (spa_exiting(spa)) {
+		mutex_exit(&spa_namespace_lock);
+		return (SET_ERROR(EBUSY));
+	}
+
+	modifying = spa->spa_sync_on &&
+	    (new_state == POOL_STATE_DESTROYED ||
+	     new_state == POOL_STATE_EXPORTED);
+
 	/*
 	 * Put a hold on the pool, drop the namespace lock, stop async tasks,
 	 * reacquire the namespace lock, and see if we can export.
 	 */
 	spa_open_ref(spa, FTAG);
+
+	/*
+	 * Mark the pool as facing impending exit if this is a forced
+	 * destroy or export.
+	 */
+	force_removal = (force || hardforce) && modifying;
+	if (force_removal) {
+		/* Ensure that references see this change after this. */
+		spa_set_killer(spa, curthread);
+	}
 	mutex_exit(&spa_namespace_lock);
 	spa_async_suspend(spa);
+
+	/*
+	 * Cancel all sends/receives if necessary, and wait for their holds
+	 * to expire.
+	 */
+	if (force_removal) {
+		error = dsl_dataset_sendrecv_cancel_all(spa);
+		if (error != 0) {
+			spa_set_killer(spa, NULL);
+			spa_async_resume(spa);
+			return (error);
+		}
+	}
+
 	if (spa->spa_zvol_taskq) {
 		zvol_remove_minors(spa, spa_name(spa), B_TRUE);
 		taskq_wait(spa->spa_zvol_taskq);
@@ -5623,16 +5678,35 @@ spa_export_common(char *pool, int new_state, nvlist_t **oldconfig,
 	mutex_enter(&spa_namespace_lock);
 	spa_close(spa, FTAG);
 
-	if (spa->spa_state == POOL_STATE_UNINITIALIZED)
+	if (!modifying)
 		goto export_spa;
+
 	/*
 	 * The pool will be in core if it's openable, in which case we can
 	 * modify its state.  Objsets may be open only because they're dirty,
 	 * so we have to force it to sync before checking spa_refcnt.
 	 */
 	if (spa->spa_sync_on) {
-		txg_wait_synced(spa->spa_dsl_pool, 0);
+		txg_wait_synced_flags(spa->spa_dsl_pool, 0, TXG_NOSUSPEND);
 		spa_evicting_os_wait(spa);
+	}
+
+	/*
+	 * For forced removal, wait for refcount to drop to minref.  At this
+	 * point, all ioctls should be on their way out or getting rejected
+	 * at the front door.
+	 */
+	if (force_removal) {
+		mutex_exit(&spa_namespace_lock);
+		mutex_enter(&spa->spa_evicting_os_lock);
+		while (spa->spa_killer == curthread) {
+			cv_wait(&spa->spa_evicting_os_cv,
+			    &spa->spa_evicting_os_lock);
+		}
+		/* Reset killer so references below here work. */
+		spa->spa_killer = curthread;
+		mutex_exit(&spa->spa_evicting_os_lock);
+		mutex_enter(&spa_namespace_lock);
 	}
 
 	/*
@@ -5640,9 +5714,9 @@ spa_export_common(char *pool, int new_state, nvlist_t **oldconfig,
 	 * references.  If we are resetting a pool, allow references by
 	 * fault injection handlers.
 	 */
-	if (!spa_refcount_zero(spa) ||
-	    (spa->spa_inject_ref != 0 &&
-	    new_state != POOL_STATE_UNINITIALIZED)) {
+	if (!spa_refcount_zero(spa) || (spa->spa_inject_ref != 0)) {
+		VERIFY(!force_removal);
+		spa_set_killer(spa, NULL);
 		spa_async_resume(spa);
 		mutex_exit(&spa_namespace_lock);
 		return (SET_ERROR(EBUSY));
@@ -5657,6 +5731,7 @@ spa_export_common(char *pool, int new_state, nvlist_t **oldconfig,
 		 */
 		if (!force && new_state == POOL_STATE_EXPORTED &&
 		    spa_has_active_shared_spare(spa)) {
+			spa_set_killer(spa, NULL);
 			spa_async_resume(spa);
 			mutex_exit(&spa_namespace_lock);
 			return (SET_ERROR(EXDEV));
@@ -8030,7 +8105,8 @@ spa_sync_allpools(void)
 			continue;
 		spa_open_ref(spa, FTAG);
 		mutex_exit(&spa_namespace_lock);
-		txg_wait_synced(spa_get_dsl(spa), 0);
+		txg_wait_synced_flags(spa_get_dsl(spa), 0,
+		    TXG_WAIT|TXG_NOSUSPEND);
 		mutex_enter(&spa_namespace_lock);
 		spa_close(spa, FTAG);
 	}

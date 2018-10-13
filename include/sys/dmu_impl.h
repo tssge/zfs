@@ -261,9 +261,7 @@ typedef struct dmu_sendarg {
 	list_node_t dsa_link;
 	dmu_replay_record_t dsa_drr;
 	int dsa_outfd;
-#ifdef _SPL_VNODE_H
 	file_t *dsa_fp;
-#endif
 	proc_t *dsa_proc;
 	offset_t dsa_off;
 	objset_t *dsa_os;

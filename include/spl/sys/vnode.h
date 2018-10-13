@@ -162,6 +162,7 @@ typedef struct vn_file {
 	struct list_head f_list;	/* list referenced file_t's */
 } file_t;
 
+extern int fo_close(file_t *fp, kthread_t *context);
 extern vnode_t *vn_alloc(int flag);
 void vn_free(vnode_t *vp);
 extern vtype_t vn_mode_to_vtype(mode_t);

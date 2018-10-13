@@ -598,7 +598,7 @@ spa_config_update(spa_t *spa, int what)
 	/*
 	 * Wait for the mosconfig to be regenerated and synced.
 	 */
-	txg_wait_synced(spa->spa_dsl_pool, txg);
+	txg_wait_synced_flags(spa->spa_dsl_pool, txg, TXG_WAIT|TXG_NOSUSPEND);
 
 	/*
 	 * Update the global config cache to reflect the new mosconfig.

@@ -4471,7 +4471,7 @@ zfs_ioc_recv_impl(char *tofs, char *tosnap, char *origin, nvlist_t *recvprops,
 		return (SET_ERROR(EBADF));
 
 	error = dmu_recv_begin(tofs, tosnap, begin_record, force,
-	    resumable, localprops, hidden_args, origin, &drc);
+	    resumable, localprops, hidden_args, origin, input_fp, &drc);
 	if (error != 0)
 		goto out;
 

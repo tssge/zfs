@@ -88,6 +88,11 @@ extern void txg_kick(struct dsl_pool *dp);
 extern void txg_wait_synced(struct dsl_pool *dp, uint64_t txg);
 
 /*
+ * Same as txg_wait_synced, except flags can result in a failure.
+ */
+extern int txg_wait_synced_flags(struct dsl_pool *dp, uint64_t txg, uint64_t flags);
+
+/*
  * Wait until the given transaction group, or one after it, is
  * the open transaction group.  Try to make this happen as soon
  * as possible (eg. kick off any necessary syncs immediately).

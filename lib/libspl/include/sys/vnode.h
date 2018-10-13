@@ -27,4 +27,9 @@
 #ifndef _LIBSPL_SYS_VNODE_H
 #define	_LIBSPL_SYS_VNODE_H
 
+/* Compile compatibility - not used in userland. */
+typedef struct file_fake {
+	unsigned int fake;
+} file_t;
+
 #endif /* _LIBSPL_SYS_VNODE_H */

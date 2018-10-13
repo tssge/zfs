@@ -894,7 +894,7 @@ dmu_tx_try_assign(dmu_tx_t *tx, uint64_t txg_how)
 		 * of the failuremode setting.
 		 */
 		if (spa_get_failmode(spa) == ZIO_FAILURE_MODE_CONTINUE &&
-		    !(txg_how & TXG_WAIT))
+		    (txg_how & (TXG_WAIT|TXG_NOSUSPEND)) != TXG_WAIT)
 			return (SET_ERROR(EIO));
 
 		return (SET_ERROR(ERESTART));
@@ -1010,6 +1010,11 @@ dmu_tx_unassign(dmu_tx_t *tx)
  * details on the throttle). This is used by the VFS operations, after
  * they have already called dmu_tx_wait() (though most likely on a
  * different tx).
+ *
+ * If TXG_NOSUSPEND is set, this indicates that this request must return
+ * EAGAIN if the pool becomes suspended while it is in progress.  This
+ * ensures that the request does not inadvertently cause conditions that
+ * cannot be unwound.
  */
 int
 dmu_tx_assign(dmu_tx_t *tx, uint64_t txg_how)
@@ -1017,7 +1022,7 @@ dmu_tx_assign(dmu_tx_t *tx, uint64_t txg_how)
 	int err;
 
 	ASSERT(tx->tx_txg == 0);
-	ASSERT0(txg_how & ~(TXG_WAIT | TXG_NOTHROTTLE));
+	ASSERT0(txg_how & ~(TXG_WAIT | TXG_NOTHROTTLE | TXG_NOSUSPEND));
 	ASSERT(!dsl_pool_sync_context(tx->tx_pool));
 
 	/* If we might wait, we must not hold the config lock. */

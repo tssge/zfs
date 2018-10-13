@@ -334,6 +334,19 @@ vn_close(vnode_t *vp, int flags, int x1, int x2, void *x3, void *x4)
 } /* vn_close() */
 EXPORT_SYMBOL(vn_close);
 
+int
+fo_close(file_t *fp, kthread_t *context)
+{
+	int rc = 0;
+
+	if (fp->f_vnode != NULL) {
+		rc = vn_close(fp->f_vnode, 0, 0, 0, NULL, NULL);
+		fp->f_vnode = NULL;
+	}
+	return (-rc);
+}
+EXPORT_SYMBOL(fo_close);
+
 /*
  * vn_seek() does not actually seek it only performs bounds checking on the
  * proposed seek.  We perform minimal checking and allow vn_rdwr() to catch

@@ -33,6 +33,7 @@
 #include <sys/dsl_crypt.h>
 #include <sys/spa.h>
 #include <sys/dsl_pool.h>
+#include <sys/vnode.h>
 
 struct vnode;
 struct dsl_dataset;
@@ -53,6 +54,7 @@ int dmu_send_estimate_from_txg(struct dsl_dataset *ds, uint64_t fromtxg,
 
 typedef struct dmu_recv_cookie {
 	struct dsl_dataset *drc_ds;
+	file_t *drc_fp;
 	struct dmu_replay_record *drc_drr_begin;
 	struct drr_begin *drc_drrb;
 	const char *drc_tofs;
@@ -73,7 +75,7 @@ typedef struct dmu_recv_cookie {
 
 int dmu_recv_begin(char *tofs, char *tosnap,
     struct dmu_replay_record *drr_begin, boolean_t force, boolean_t resumable,
-    nvlist_t *localprops, nvlist_t *hidden_args, char *origin,
+    nvlist_t *localprops, nvlist_t *hidden_args, char *origin, file_t *fp,
     dmu_recv_cookie_t *drc);
 int dmu_recv_stream(dmu_recv_cookie_t *drc, struct vnode *vp, offset_t *voffp,
     int cleanup_fd, uint64_t *action_handlep);
