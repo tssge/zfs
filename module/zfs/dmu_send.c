@@ -105,6 +105,7 @@ typedef struct dump_bytes_io {
 	int		dbi_len;
 } dump_bytes_io_t;
 
+#ifdef _KERNEL
 static void
 dump_bytes_cb(void *arg)
 {
@@ -126,12 +127,12 @@ dump_bytes_cb(void *arg)
 	ASSERT(dbi->dbi_len % 8 == 0 ||
 	    (dsp->dsa_featureflags & DMU_BACKUP_FEATURE_RAW) != 0);
 
-	dsp->dsa_err = vn_rdwr(UIO_WRITE, dsp->dsa_vp,
+	dsp->dsa_err = vn_rdwr(UIO_WRITE, dsp->dsa_fp->f_vnode,
 	    (caddr_t)dbi->dbi_buf, dbi->dbi_len,
 	    0, UIO_SYSSPACE, FAPPEND, RLIM64_INFINITY, CRED(), &resid);
 
 	mutex_enter(&ds->ds_sendstream_lock);
-	*dsp->dsa_off += dbi->dbi_len;
+	dsp->dsa_off += dbi->dbi_len;
 	mutex_exit(&ds->ds_sendstream_lock);
 }
 
@@ -168,25 +169,27 @@ dump_bytes(dmu_sendarg_t *dsp, void *buf, int len)
 static int
 dump_record(dmu_sendarg_t *dsp, void *payload, int payload_len)
 {
+	dmu_replay_record_t *drr = &dsp->dsa_drr;
+
 	ASSERT3U(offsetof(dmu_replay_record_t, drr_u.drr_checksum.drr_checksum),
 	    ==, sizeof (dmu_replay_record_t) - sizeof (zio_cksum_t));
-	(void) fletcher_4_incremental_native(dsp->dsa_drr,
+	(void) fletcher_4_incremental_native(drr,
 	    offsetof(dmu_replay_record_t, drr_u.drr_checksum.drr_checksum),
 	    &dsp->dsa_zc);
-	if (dsp->dsa_drr->drr_type == DRR_BEGIN) {
+	if (drr->drr_type == DRR_BEGIN) {
 		dsp->dsa_sent_begin = B_TRUE;
 	} else {
-		ASSERT(ZIO_CHECKSUM_IS_ZERO(&dsp->dsa_drr->drr_u.
+		ASSERT(ZIO_CHECKSUM_IS_ZERO(&drr->drr_u.
 		    drr_checksum.drr_checksum));
-		dsp->dsa_drr->drr_u.drr_checksum.drr_checksum = dsp->dsa_zc;
+		drr->drr_u.drr_checksum.drr_checksum = dsp->dsa_zc;
 	}
-	if (dsp->dsa_drr->drr_type == DRR_END) {
+	if (drr->drr_type == DRR_END) {
 		dsp->dsa_sent_end = B_TRUE;
 	}
-	(void) fletcher_4_incremental_native(&dsp->dsa_drr->
+	(void) fletcher_4_incremental_native(&drr->
 	    drr_u.drr_checksum.drr_checksum,
 	    sizeof (zio_cksum_t), &dsp->dsa_zc);
-	if (dump_bytes(dsp, dsp->dsa_drr, sizeof (dmu_replay_record_t)) != 0)
+	if (dump_bytes(dsp, drr, sizeof (dmu_replay_record_t)) != 0)
 		return (SET_ERROR(EINTR));
 	if (payload_len != 0) {
 		(void) fletcher_4_incremental_native(payload, payload_len,
@@ -209,7 +212,8 @@ static int
 dump_free(dmu_sendarg_t *dsp, uint64_t object, uint64_t offset,
     uint64_t length)
 {
-	struct drr_free *drrf = &(dsp->dsa_drr->drr_u.drr_free);
+	dmu_replay_record_t *drr = &dsp->dsa_drr;
+	struct drr_free *drrf = &(drr->drr_u.drr_free);
 
 	/*
 	 * When we receive a free record, dbuf_free_range() assumes
@@ -269,8 +273,8 @@ dump_free(dmu_sendarg_t *dsp, uint64_t object, uint64_t offset,
 		}
 	}
 	/* create a FREE record and make it pending */
-	bzero(dsp->dsa_drr, sizeof (dmu_replay_record_t));
-	dsp->dsa_drr->drr_type = DRR_FREE;
+	bzero(drr, sizeof (dmu_replay_record_t));
+	drr->drr_type = DRR_FREE;
 	drrf->drr_object = object;
 	drrf->drr_offset = offset;
 	if (offset + length < offset)
@@ -294,7 +298,8 @@ dump_write(dmu_sendarg_t *dsp, dmu_object_type_t type, uint64_t object,
 {
 	uint64_t payload_size;
 	boolean_t raw = (dsp->dsa_featureflags & DMU_BACKUP_FEATURE_RAW);
-	struct drr_write *drrw = &(dsp->dsa_drr->drr_u.drr_write);
+	dmu_replay_record_t *drr = &dsp->dsa_drr;
+	struct drr_write *drrw = &(drr->drr_u.drr_write);
 
 	/*
 	 * We send data in increasing object, offset order.
@@ -318,8 +323,8 @@ dump_write(dmu_sendarg_t *dsp, dmu_object_type_t type, uint64_t object,
 		dsp->dsa_pending_op = PENDING_NONE;
 	}
 	/* write a WRITE record */
-	bzero(dsp->dsa_drr, sizeof (dmu_replay_record_t));
-	dsp->dsa_drr->drr_type = DRR_WRITE;
+	bzero(drr, sizeof (dmu_replay_record_t));
+	drr->drr_type = DRR_WRITE;
 	drrw->drr_object = object;
 	drrw->drr_type = type;
 	drrw->drr_offset = offset;
@@ -393,8 +398,8 @@ dump_write_embedded(dmu_sendarg_t *dsp, uint64_t object, uint64_t offset,
     int blksz, const blkptr_t *bp)
 {
 	char buf[BPE_PAYLOAD_SIZE];
-	struct drr_write_embedded *drrw =
-	    &(dsp->dsa_drr->drr_u.drr_write_embedded);
+	dmu_replay_record_t *drr = &dsp->dsa_drr;
+	struct drr_write_embedded *drrw = &(drr->drr_u.drr_write_embedded);
 
 	if (dsp->dsa_pending_op != PENDING_NONE) {
 		if (dump_record(dsp, NULL, 0) != 0)
@@ -404,8 +409,8 @@ dump_write_embedded(dmu_sendarg_t *dsp, uint64_t object, uint64_t offset,
 
 	ASSERT(BP_IS_EMBEDDED(bp));
 
-	bzero(dsp->dsa_drr, sizeof (dmu_replay_record_t));
-	dsp->dsa_drr->drr_type = DRR_WRITE_EMBEDDED;
+	bzero(drr, sizeof (dmu_replay_record_t));
+	drr->drr_type = DRR_WRITE_EMBEDDED;
 	drrw->drr_object = object;
 	drrw->drr_offset = offset;
 	drrw->drr_length = blksz;
@@ -425,7 +430,8 @@ dump_write_embedded(dmu_sendarg_t *dsp, uint64_t object, uint64_t offset,
 static int
 dump_spill(dmu_sendarg_t *dsp, const blkptr_t *bp, uint64_t object, void *data)
 {
-	struct drr_spill *drrs = &(dsp->dsa_drr->drr_u.drr_spill);
+	dmu_replay_record_t *drr = &dsp->dsa_drr;
+	struct drr_spill *drrs = &(drr->drr_u.drr_spill);
 	uint64_t blksz = BP_GET_LSIZE(bp);
 	uint64_t payload_size = blksz;
 
@@ -436,8 +442,8 @@ dump_spill(dmu_sendarg_t *dsp, const blkptr_t *bp, uint64_t object, void *data)
 	}
 
 	/* write a SPILL record */
-	bzero(dsp->dsa_drr, sizeof (dmu_replay_record_t));
-	dsp->dsa_drr->drr_type = DRR_SPILL;
+	bzero(drr, sizeof (dmu_replay_record_t));
+	drr->drr_type = DRR_SPILL;
 	drrs->drr_object = object;
 	drrs->drr_length = blksz;
 	drrs->drr_toguid = dsp->dsa_toguid;
@@ -463,7 +469,8 @@ dump_spill(dmu_sendarg_t *dsp, const blkptr_t *bp, uint64_t object, void *data)
 static int
 dump_freeobjects(dmu_sendarg_t *dsp, uint64_t firstobj, uint64_t numobjs)
 {
-	struct drr_freeobjects *drrfo = &(dsp->dsa_drr->drr_u.drr_freeobjects);
+	dmu_replay_record_t *drr = &dsp->dsa_drr;
+	struct drr_freeobjects *drrfo = &(drr->drr_u.drr_freeobjects);
 	uint64_t maxobj = DNODES_PER_BLOCK *
 	    (DMU_META_DNODE(dsp->dsa_os)->dn_maxblkid + 1);
 
@@ -511,8 +518,8 @@ dump_freeobjects(dmu_sendarg_t *dsp, uint64_t firstobj, uint64_t numobjs)
 	}
 
 	/* write a FREEOBJECTS record */
-	bzero(dsp->dsa_drr, sizeof (dmu_replay_record_t));
-	dsp->dsa_drr->drr_type = DRR_FREEOBJECTS;
+	bzero(drr, sizeof (dmu_replay_record_t));
+	drr->drr_type = DRR_FREEOBJECTS;
 	drrfo->drr_firstobj = firstobj;
 	drrfo->drr_numobjs = numobjs;
 	drrfo->drr_toguid = dsp->dsa_toguid;
@@ -526,7 +533,8 @@ static int
 dump_dnode(dmu_sendarg_t *dsp, const blkptr_t *bp, uint64_t object,
     dnode_phys_t *dnp)
 {
-	struct drr_object *drro = &(dsp->dsa_drr->drr_u.drr_object);
+	dmu_replay_record_t *drr = &dsp->dsa_drr;
+	struct drr_object *drro = &(drr->drr_u.drr_object);
 	int bonuslen;
 
 	if (object < dsp->dsa_resume_object) {
@@ -552,8 +560,8 @@ dump_dnode(dmu_sendarg_t *dsp, const blkptr_t *bp, uint64_t object,
 	}
 
 	/* write an OBJECT record */
-	bzero(dsp->dsa_drr, sizeof (dmu_replay_record_t));
-	dsp->dsa_drr->drr_type = DRR_OBJECT;
+	bzero(drr, sizeof (dmu_replay_record_t));
+	drr->drr_type = DRR_OBJECT;
 	drro->drr_object = object;
 	drro->drr_type = dnp->dn_type;
 	drro->drr_bonustype = dnp->dn_bonustype;
@@ -609,8 +617,8 @@ static int
 dump_object_range(dmu_sendarg_t *dsp, const blkptr_t *bp, uint64_t firstobj,
     uint64_t numslots)
 {
-	struct drr_object_range *drror =
-	    &(dsp->dsa_drr->drr_u.drr_object_range);
+	dmu_replay_record_t *drr = &dsp->dsa_drr;
+	struct drr_object_range *drror = &(drr->drr_u.drr_object_range);
 
 	/* we only use this record type for raw sends */
 	ASSERT(BP_IS_PROTECTED(bp));
@@ -625,8 +633,8 @@ dump_object_range(dmu_sendarg_t *dsp, const blkptr_t *bp, uint64_t firstobj,
 		dsp->dsa_pending_op = PENDING_NONE;
 	}
 
-	bzero(dsp->dsa_drr, sizeof (dmu_replay_record_t));
-	dsp->dsa_drr->drr_type = DRR_OBJECT_RANGE;
+	bzero(drr, sizeof (dmu_replay_record_t));
+	drr->drr_type = DRR_OBJECT_RANGE;
 	drror->drr_firstobj = firstobj;
 	drror->drr_numslots = numslots;
 	drror->drr_toguid = dsp->dsa_toguid;
@@ -953,34 +961,32 @@ get_next_record(bqueue_t *bq, struct send_block_record *data)
 	return (tmp);
 }
 
-/*
- * Actually do the bulk of the work in a zfs send.
- *
- * Note: Releases dp using the specified tag.
- */
 static int
-dmu_send_impl(void *tag, dsl_pool_t *dp, dsl_dataset_t *to_ds,
+dmu_send_init(struct send_thread_arg *to_arg, dsl_pool_t *dp,
+    dsl_dataset_t *to_ds, dsl_dataset_t *fromds,
+    int outfd, uint64_t resumeobj, uint64_t resumeoff,
     zfs_bookmark_phys_t *ancestor_zb, boolean_t is_clone,
-    boolean_t embedok, boolean_t large_block_ok, boolean_t compressok,
-    boolean_t rawok, int outfd, uint64_t resumeobj, uint64_t resumeoff,
-    vnode_t *vp, offset_t *off)
+    boolean_t embedok, boolean_t large_block_ok,
+    boolean_t compressok, boolean_t rawok,
+    char **payload, dmu_sendarg_t **dsap)
 {
 	objset_t *os;
 	dmu_replay_record_t *drr;
 	dmu_sendarg_t *dsp;
 	int err;
-	uint64_t fromtxg = 0;
 	uint64_t featureflags = 0;
-	struct send_thread_arg to_arg;
-	void *payload = NULL;
-	size_t payload_len = 0;
-	struct send_block_record *to_data;
+	file_t *fp;
 
+	*payload = NULL;
+	dsp = *dsap = NULL;
+	memset(to_arg, 0, sizeof (*to_arg));
 	err = dmu_objset_from_ds(to_ds, &os);
-	if (err != 0) {
-		dsl_pool_rele(dp, tag);
+	if (err != 0)
 		return (err);
-	}
+
+	fp = getf(outfd);
+	if (fp == NULL)
+		return (SET_ERROR(EBADF));
 
 	/*
 	 * If this is a non-raw send of an encrypted ds, we can ensure that
@@ -996,35 +1002,22 @@ dmu_send_impl(void *tag, dsl_pool_t *dp, dsl_dataset_t *to_ds,
 		    ZB_ROOT_LEVEL, ZB_ROOT_BLKID);
 		err = arc_untransform(os->os_phys_buf, os->os_spa,
 		    &zb, B_FALSE);
-		if (err != 0) {
-			dsl_pool_rele(dp, tag);
-			return (err);
-		}
+		if (err != 0)
+			goto fail;
 
 		ASSERT0(arc_is_unauthenticated(os->os_phys_buf));
 	}
 
-	drr = kmem_zalloc(sizeof (dmu_replay_record_t), KM_SLEEP);
-	drr->drr_type = DRR_BEGIN;
-	drr->drr_u.drr_begin.drr_magic = DMU_BACKUP_MAGIC;
-	DMU_SET_STREAM_HDRTYPE(drr->drr_u.drr_begin.drr_versioninfo,
-	    DMU_SUBSTREAM);
-
-	bzero(&to_arg, sizeof (to_arg));
-
-#ifdef _KERNEL
 	if (dmu_objset_type(os) == DMU_OST_ZFS) {
 		uint64_t version;
 		if (zfs_get_zplprop(os, ZFS_PROP_VERSION, &version) != 0) {
-			kmem_free(drr, sizeof (dmu_replay_record_t));
-			dsl_pool_rele(dp, tag);
-			return (SET_ERROR(EINVAL));
+			err = SET_ERROR(EINVAL);
+			goto fail;
 		}
 		if (version >= ZPL_VERSION_SA) {
 			featureflags |= DMU_BACKUP_FEATURE_SA_SPILL;
 		}
 	}
-#endif
 
 	/* raw sends imply large_block_ok */
 	if ((large_block_ok || rawok) &&
@@ -1056,9 +1049,16 @@ dmu_send_impl(void *tag, dsl_pool_t *dp, dsl_dataset_t *to_ds,
 		featureflags |= DMU_BACKUP_FEATURE_RESUMING;
 	}
 
+	dsp = kmem_zalloc(sizeof (dmu_sendarg_t), KM_SLEEP);
+	drr = &dsp->dsa_drr;
+
 	DMU_SET_FEATUREFLAGS(drr->drr_u.drr_begin.drr_versioninfo,
 	    featureflags);
 
+	drr->drr_type = DRR_BEGIN;
+	drr->drr_u.drr_begin.drr_magic = DMU_BACKUP_MAGIC;
+	DMU_SET_STREAM_HDRTYPE(drr->drr_u.drr_begin.drr_versioninfo,
+	    DMU_SUBSTREAM);
 	drr->drr_u.drr_begin.drr_creation_time =
 	    dsl_dataset_phys(to_ds)->ds_creation_time;
 	drr->drr_u.drr_begin.drr_type = dmu_objset_type(os);
@@ -1071,36 +1071,14 @@ dmu_send_impl(void *tag, dsl_pool_t *dp, dsl_dataset_t *to_ds,
 		drr->drr_u.drr_begin.drr_flags |= DRR_FLAG_FREERECORDS;
 
 	if (ancestor_zb != NULL) {
-		drr->drr_u.drr_begin.drr_fromguid =
-		    ancestor_zb->zbm_guid;
-		fromtxg = ancestor_zb->zbm_creation_txg;
+		drr->drr_u.drr_begin.drr_fromguid = ancestor_zb->zbm_guid;
+		to_arg->fromtxg = ancestor_zb->zbm_creation_txg;
 	}
 	dsl_dataset_name(to_ds, drr->drr_u.drr_begin.drr_toname);
 	if (!to_ds->ds_is_snapshot) {
 		(void) strlcat(drr->drr_u.drr_begin.drr_toname, "@--head--",
 		    sizeof (drr->drr_u.drr_begin.drr_toname));
 	}
-
-	dsp = kmem_zalloc(sizeof (dmu_sendarg_t), KM_SLEEP);
-
-	dsp->dsa_drr = drr;
-	dsp->dsa_vp = vp;
-	dsp->dsa_outfd = outfd;
-	dsp->dsa_proc = curproc;
-	dsp->dsa_os = os;
-	dsp->dsa_off = off;
-	dsp->dsa_toguid = dsl_dataset_phys(to_ds)->ds_guid;
-	dsp->dsa_pending_op = PENDING_NONE;
-	dsp->dsa_featureflags = featureflags;
-	dsp->dsa_resume_object = resumeobj;
-	dsp->dsa_resume_offset = resumeoff;
-
-	mutex_enter(&to_ds->ds_sendstream_lock);
-	list_insert_head(&to_ds->ds_sendstreams, dsp);
-	mutex_exit(&to_ds->ds_sendstream_lock);
-
-	dsl_dataset_long_hold(to_ds, FTAG);
-	dsl_pool_rele(dp, tag);
 
 	/* handle features that require a DRR_BEGIN payload */
 	if (featureflags &
@@ -1113,10 +1091,10 @@ dmu_send_impl(void *tag, dsl_pool_t *dp, dsl_dataset_t *to_ds,
 			err = dmu_object_info(os, resumeobj, &to_doi);
 			if (err != 0) {
 				fnvlist_free(nvl);
-				goto out;
+				goto fail;
 			}
 
-			SET_BOOKMARK(&to_arg.resume, to_ds->ds_object,
+			SET_BOOKMARK(&to_arg->resume, to_ds->ds_object,
 			    resumeobj, 0,
 			    resumeoff / to_doi.doi_data_block_size);
 
@@ -1130,32 +1108,133 @@ dmu_send_impl(void *tag, dsl_pool_t *dp, dsl_dataset_t *to_ds,
 			err = dsl_crypto_populate_key_nvlist(to_ds, &keynvl);
 			if (err != 0) {
 				fnvlist_free(nvl);
-				goto out;
+				goto fail;
 			}
 
 			fnvlist_add_nvlist(nvl, "crypt_keydata", keynvl);
 		}
 
-		payload = fnvlist_pack(nvl, &payload_len);
-		drr->drr_payloadlen = payload_len;
+		*payload = fnvlist_pack(nvl, (size_t *)&drr->drr_payloadlen);
 		fnvlist_free(keynvl);
 		fnvlist_free(nvl);
 	}
 
-	err = dump_record(dsp, payload, payload_len);
-	fnvlist_pack_free(payload, payload_len);
+	dsp->dsa_fp = fp;
+	dsp->dsa_outfd = outfd;
+	dsp->dsa_proc = curproc;
+	dsp->dsa_os = os;
+	dsp->dsa_off = fp->f_offset;
+	dsp->dsa_toguid = dsl_dataset_phys(to_ds)->ds_guid;
+	dsp->dsa_pending_op = PENDING_NONE;
+	dsp->dsa_featureflags = featureflags;
+	dsp->dsa_resume_object = resumeobj;
+	dsp->dsa_resume_offset = resumeoff;
+
+	*dsap = dsp;
+	return (0);
+
+fail:
+	releasef(outfd);
+	kmem_free(dsp, sizeof (dmu_sendarg_t));
+	return (err);
+}
+
+static int
+send_register(dsl_pool_t *dp, dsl_dataset_t *ds, dmu_sendarg_t *dsp,
+    boolean_t owned, void *tag)
+{
+	int err = 0;
+
+	if (err == 0) {
+		if (owned) {
+			if (!dsl_dataset_tryown(ds, tag))
+				err = SET_ERROR(EBUSY);
+		} else
+			dsl_dataset_long_hold(ds, tag);
+	}
+	if (err == 0) {
+		mutex_enter(&ds->ds_sendstream_lock);
+		list_insert_head(&ds->ds_sendstreams, dsp);
+		mutex_exit(&ds->ds_sendstream_lock);
+	}
+
+	return (err);
+}
+#endif
+
+int
+dmu_send(dsl_pool_t *dp, dsl_dataset_t *ds, dsl_dataset_t *fromds, char *fromzb,
+    boolean_t embedok, boolean_t large_block_ok,
+    boolean_t compressok, boolean_t rawok,
+    uint64_t resumeobj, uint64_t resumeoff,
+    int outfd, void *tag)
+{
+	int err;
+#ifdef _KERNEL
+	dmu_sendarg_t *dsp;
+	dmu_replay_record_t *drr;
+	boolean_t owned = B_FALSE;
+	struct send_thread_arg to_arg;
+	struct send_block_record *to_data;
+	zfs_bookmark_phys_t zb;
+	boolean_t is_clone = B_FALSE;
+	ds_hold_flags_t dsflags = (rawok) ? 0 : DS_HOLD_FLAG_DECRYPT;
+	char *payload;
+	loff_t off;
+
+	/* Common setup if an incremental is being performed. */
+	if (fromds != NULL) {
+		if (!dsl_dataset_is_before(ds, fromds, 0)) {
+			dsl_dataset_rele(fromds, tag);
+			dsl_pool_rele(dp, tag);
+			return (SET_ERROR(EXDEV));
+		}
+		ASSERT3P(fromzb, ==, NULL);
+		zb.zbm_creation_time =
+		    dsl_dataset_phys(fromds)->ds_creation_time;
+		zb.zbm_creation_txg = dsl_dataset_phys(fromds)->ds_creation_txg;
+		zb.zbm_guid = dsl_dataset_phys(fromds)->ds_guid;
+		is_clone = (fromds->ds_dir != ds->ds_dir);
+	} else if (fromzb != NULL) {
+		ASSERT3P(fromds, ==, NULL);
+		err = dsl_bookmark_lookup(dp, fromzb, ds, &zb);
+		if (err != 0) {
+			dsl_pool_rele(dp, tag);
+			return (err);
+		}
+	}
+
+	err = dmu_send_init(&to_arg, dp, ds, fromds, outfd,
+	    resumeobj, resumeoff,
+	    (fromds != NULL || fromzb != NULL) ? &zb : NULL, is_clone,
+	    embedok, large_block_ok, compressok, rawok, &payload, &dsp);
+	if (fromds != NULL)
+		dsl_dataset_rele(fromds, tag);
+	if (err != 0) {
+		dsl_pool_rele(dp, tag);
+		return (err);
+	}
+
+	err = send_register(dp, ds, dsp, owned, tag);
+	if (err != 0) {
+		dsl_dataset_rele(ds, tag);
+		goto regfail;
+	}
+
+	dsl_pool_rele(dp, tag);
+
+	/* All setup complete, initiate send. */
+	drr = &dsp->dsa_drr;
+	err = dump_record(dsp, payload, drr->drr_payloadlen);
 	if (err != 0) {
 		err = dsp->dsa_err;
-		goto out;
+		goto errout;
 	}
 
 	err = bqueue_init(&to_arg.q,
 	    MAX(zfs_send_queue_length, 2 * zfs_max_recordsize),
 	    offsetof(struct send_block_record, ln));
-	to_arg.error_code = 0;
-	to_arg.cancel = B_FALSE;
-	to_arg.ds = to_ds;
-	to_arg.fromtxg = fromtxg;
+	to_arg.ds = ds;
 	to_arg.flags = TRAVERSE_PRE | TRAVERSE_PREFETCH;
 	if (rawok)
 		to_arg.flags |= TRAVERSE_NO_DECRYPT;
@@ -1168,7 +1247,7 @@ dmu_send_impl(void *tag, dsl_pool_t *dp, dsl_dataset_t *to_ds,
 		err = do_dump(dsp, to_data);
 		to_data = get_next_record(&to_arg.q, to_data);
 		if (issig(JUSTLOOKING) && issig(FORREAL))
-			err = EINTR;
+			err = SET_ERROR(EINTR);
 	}
 
 	if (err != 0) {
@@ -1185,7 +1264,7 @@ dmu_send_impl(void *tag, dsl_pool_t *dp, dsl_dataset_t *to_ds,
 		err = to_arg.error_code;
 
 	if (err != 0)
-		goto out;
+		goto errout;
 
 	if (dsp->dsa_pending_op != PENDING_NONE)
 		if (dump_record(dsp, NULL, 0) != 0)
@@ -1194,7 +1273,7 @@ dmu_send_impl(void *tag, dsl_pool_t *dp, dsl_dataset_t *to_ds,
 	if (err != 0) {
 		if (err == EINTR && dsp->dsa_err != 0)
 			err = dsp->dsa_err;
-		goto out;
+		goto errout;
 	}
 
 	bzero(drr, sizeof (dmu_replay_record_t));
@@ -1204,159 +1283,23 @@ dmu_send_impl(void *tag, dsl_pool_t *dp, dsl_dataset_t *to_ds,
 
 	if (dump_record(dsp, NULL, 0) != 0)
 		err = dsp->dsa_err;
-out:
-	mutex_enter(&to_ds->ds_sendstream_lock);
-	list_remove(&to_ds->ds_sendstreams, dsp);
-	mutex_exit(&to_ds->ds_sendstream_lock);
 
-	VERIFY(err != 0 || (dsp->dsa_sent_begin && dsp->dsa_sent_end));
+errout:
+	if (!owned)
+		dsl_dataset_rele_flags(ds, dsflags, tag);
+	else
+		dsl_dataset_disown(ds, dsflags, tag);
 
-	kmem_free(drr, sizeof (dmu_replay_record_t));
+regfail:
+	if (VOP_SEEK(dsp->dsa_fp->f_vnode, dsp->dsa_fp->f_offset, &off, NULL) == 0)
+		dsp->dsa_fp->f_offset = off;
+	releasef(dsp->dsa_outfd);
 	kmem_free(dsp, sizeof (dmu_sendarg_t));
 
-	dsl_dataset_long_rele(to_ds, FTAG);
-
-	return (err);
-}
-
-int
-dmu_send_obj(const char *pool, uint64_t tosnap, uint64_t fromsnap,
-    boolean_t embedok, boolean_t large_block_ok, boolean_t compressok,
-    boolean_t rawok, int outfd, vnode_t *vp, offset_t *off)
-{
-	dsl_pool_t *dp;
-	dsl_dataset_t *ds;
-	dsl_dataset_t *fromds = NULL;
-	ds_hold_flags_t dsflags = (rawok) ? 0 : DS_HOLD_FLAG_DECRYPT;
-	int err;
-
-	err = dsl_pool_hold(pool, FTAG, &dp);
-	if (err != 0)
-		return (err);
-
-	err = dsl_dataset_hold_obj_flags(dp, tosnap, dsflags, FTAG, &ds);
-	if (err != 0) {
-		dsl_pool_rele(dp, FTAG);
-		return (err);
-	}
-
-	if (fromsnap != 0) {
-		zfs_bookmark_phys_t zb;
-		boolean_t is_clone;
-
-		err = dsl_dataset_hold_obj(dp, fromsnap, FTAG, &fromds);
-		if (err != 0) {
-			dsl_dataset_rele_flags(ds, dsflags, FTAG);
-			dsl_pool_rele(dp, FTAG);
-			return (err);
-		}
-		if (!dsl_dataset_is_before(ds, fromds, 0))
-			err = SET_ERROR(EXDEV);
-		zb.zbm_creation_time =
-		    dsl_dataset_phys(fromds)->ds_creation_time;
-		zb.zbm_creation_txg = dsl_dataset_phys(fromds)->ds_creation_txg;
-		zb.zbm_guid = dsl_dataset_phys(fromds)->ds_guid;
-		is_clone = (fromds->ds_dir != ds->ds_dir);
-		dsl_dataset_rele(fromds, FTAG);
-		err = dmu_send_impl(FTAG, dp, ds, &zb, is_clone,
-		    embedok, large_block_ok, compressok, rawok, outfd,
-		    0, 0, vp, off);
-	} else {
-		err = dmu_send_impl(FTAG, dp, ds, NULL, B_FALSE,
-		    embedok, large_block_ok, compressok, rawok, outfd,
-		    0, 0, vp, off);
-	}
-	dsl_dataset_rele_flags(ds, dsflags, FTAG);
-	return (err);
-}
-
-int
-dmu_send(const char *tosnap, const char *fromsnap, boolean_t embedok,
-    boolean_t large_block_ok, boolean_t compressok, boolean_t rawok,
-    int outfd, uint64_t resumeobj, uint64_t resumeoff, vnode_t *vp,
-    offset_t *off)
-{
-	dsl_pool_t *dp;
-	dsl_dataset_t *ds;
-	int err;
-	ds_hold_flags_t dsflags = (rawok) ? 0 : DS_HOLD_FLAG_DECRYPT;
-	boolean_t owned = B_FALSE;
-
-	if (fromsnap != NULL && strpbrk(fromsnap, "@#") == NULL)
-		return (SET_ERROR(EINVAL));
-
-	err = dsl_pool_hold(tosnap, FTAG, &dp);
-	if (err != 0)
-		return (err);
-
-	if (strchr(tosnap, '@') == NULL && spa_writeable(dp->dp_spa)) {
-		/*
-		 * We are sending a filesystem or volume.  Ensure
-		 * that it doesn't change by owning the dataset.
-		 */
-		err = dsl_dataset_own(dp, tosnap, dsflags, FTAG, &ds);
-		owned = B_TRUE;
-	} else {
-		err = dsl_dataset_hold_flags(dp, tosnap, dsflags, FTAG, &ds);
-	}
-	if (err != 0) {
-		dsl_pool_rele(dp, FTAG);
-		return (err);
-	}
-
-	if (fromsnap != NULL) {
-		zfs_bookmark_phys_t zb;
-		boolean_t is_clone = B_FALSE;
-		int fsnamelen = strchr(tosnap, '@') - tosnap;
-
-		/*
-		 * If the fromsnap is in a different filesystem, then
-		 * mark the send stream as a clone.
-		 */
-		if (strncmp(tosnap, fromsnap, fsnamelen) != 0 ||
-		    (fromsnap[fsnamelen] != '@' &&
-		    fromsnap[fsnamelen] != '#')) {
-			is_clone = B_TRUE;
-		}
-
-		if (strchr(fromsnap, '@')) {
-			dsl_dataset_t *fromds;
-			err = dsl_dataset_hold(dp, fromsnap, FTAG, &fromds);
-			if (err == 0) {
-				if (!dsl_dataset_is_before(ds, fromds, 0))
-					err = SET_ERROR(EXDEV);
-				zb.zbm_creation_time =
-				    dsl_dataset_phys(fromds)->ds_creation_time;
-				zb.zbm_creation_txg =
-				    dsl_dataset_phys(fromds)->ds_creation_txg;
-				zb.zbm_guid = dsl_dataset_phys(fromds)->ds_guid;
-				is_clone = (ds->ds_dir != fromds->ds_dir);
-				dsl_dataset_rele(fromds, FTAG);
-			}
-		} else {
-			err = dsl_bookmark_lookup(dp, fromsnap, ds, &zb);
-		}
-		if (err != 0) {
-			if (owned)
-				dsl_dataset_disown(ds, dsflags, FTAG);
-			else
-				dsl_dataset_rele_flags(ds, dsflags, FTAG);
-
-			dsl_pool_rele(dp, FTAG);
-			return (err);
-		}
-		err = dmu_send_impl(FTAG, dp, ds, &zb, is_clone,
-		    embedok, large_block_ok, compressok, rawok,
-		    outfd, resumeobj, resumeoff, vp, off);
-	} else {
-		err = dmu_send_impl(FTAG, dp, ds, NULL, B_FALSE,
-		    embedok, large_block_ok, compressok, rawok,
-		    outfd, resumeobj, resumeoff, vp, off);
-	}
-	if (owned)
-		dsl_dataset_disown(ds, dsflags, FTAG);
-	else
-		dsl_dataset_rele_flags(ds, dsflags, FTAG);
+#else /* _KERNEL */
+	fprintf(stderr, "%s: returning EOPNOTSUPP\n", __func__);
+	err = EOPNOTSUPP;
+#endif
 
 	return (err);
 }

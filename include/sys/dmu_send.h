@@ -32,6 +32,7 @@
 #include <sys/inttypes.h>
 #include <sys/dsl_crypt.h>
 #include <sys/spa.h>
+#include <sys/dsl_pool.h>
 
 struct vnode;
 struct dsl_dataset;
@@ -41,16 +42,14 @@ struct dmu_replay_record;
 
 extern const char *recv_clone_name;
 
-int dmu_send(const char *tosnap, const char *fromsnap, boolean_t embedok,
-    boolean_t large_block_ok, boolean_t compressok, boolean_t rawok, int outfd,
-    uint64_t resumeobj, uint64_t resumeoff, struct vnode *vp, offset_t *off);
+int dmu_send(dsl_pool_t *dp, dsl_dataset_t *ds, dsl_dataset_t *fromds, char *fromzb,
+    boolean_t embedok, boolean_t large_block_ok, boolean_t compressok,
+    boolean_t rawok, uint64_t resumeobj, uint64_t resumeoff,
+    int outfd, void *tag);
 int dmu_send_estimate(struct dsl_dataset *ds, struct dsl_dataset *fromds,
     boolean_t stream_compressed, uint64_t *sizep);
 int dmu_send_estimate_from_txg(struct dsl_dataset *ds, uint64_t fromtxg,
     boolean_t stream_compressed, uint64_t *sizep);
-int dmu_send_obj(const char *pool, uint64_t tosnap, uint64_t fromsnap,
-    boolean_t embedok, boolean_t large_block_ok, boolean_t compressok,
-    boolean_t rawok, int outfd, struct vnode *vp, offset_t *off);
 
 typedef struct dmu_recv_cookie {
 	struct dsl_dataset *drc_ds;

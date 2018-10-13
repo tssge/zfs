@@ -4973,81 +4973,50 @@ static int
 zfs_ioc_send(zfs_cmd_t *zc)
 {
 	int error;
-	offset_t off;
 	boolean_t estimate = (zc->zc_guid != 0);
 	boolean_t embedok = (zc->zc_flags & 0x1);
 	boolean_t large_block_ok = (zc->zc_flags & 0x2);
 	boolean_t compressok = (zc->zc_flags & 0x4);
 	boolean_t rawok = (zc->zc_flags & 0x8);
+	ds_hold_flags_t dsflags = (rawok) ? 0 : DS_HOLD_FLAG_DECRYPT;
+	dsl_pool_t *dp;
+	dsl_dataset_t *ds, *fromds;
 
-	if (zc->zc_obj != 0) {
-		dsl_pool_t *dp;
-		dsl_dataset_t *tosnap;
+	error = dsl_pool_hold(zc->zc_name, FTAG, &dp);
+	if (error != 0)
+		return (error);
 
-		error = dsl_pool_hold(zc->zc_name, FTAG, &dp);
+	error = dsl_dataset_hold_obj_flags(dp, zc->zc_sendobj, dsflags,
+	    FTAG, &ds);
+	if (error != 0)
+		goto out;
+
+	if (zc->zc_fromobj != 0) {
+		error = dsl_dataset_hold_obj(dp, zc->zc_fromobj, FTAG, &fromds);
 		if (error != 0)
-			return (error);
-
-		error = dsl_dataset_hold_obj(dp, zc->zc_sendobj, FTAG, &tosnap);
-		if (error != 0) {
-			dsl_pool_rele(dp, FTAG);
-			return (error);
-		}
-
-		if (dsl_dir_is_clone(tosnap->ds_dir))
-			zc->zc_fromobj =
-			    dsl_dir_phys(tosnap->ds_dir)->dd_origin_obj;
-		dsl_dataset_rele(tosnap, FTAG);
-		dsl_pool_rele(dp, FTAG);
+			goto out;
 	}
 
 	if (estimate) {
-		dsl_pool_t *dp;
-		dsl_dataset_t *tosnap;
-		dsl_dataset_t *fromsnap = NULL;
-
-		error = dsl_pool_hold(zc->zc_name, FTAG, &dp);
-		if (error != 0)
-			return (error);
-
-		error = dsl_dataset_hold_obj(dp, zc->zc_sendobj,
-		    FTAG, &tosnap);
-		if (error != 0) {
-			dsl_pool_rele(dp, FTAG);
-			return (error);
-		}
-
-		if (zc->zc_fromobj != 0) {
-			error = dsl_dataset_hold_obj(dp, zc->zc_fromobj,
-			    FTAG, &fromsnap);
-			if (error != 0) {
-				dsl_dataset_rele(tosnap, FTAG);
-				dsl_pool_rele(dp, FTAG);
-				return (error);
-			}
-		}
-
-		error = dmu_send_estimate(tosnap, fromsnap, compressok || rawok,
+		if (dsl_dir_is_clone(ds->ds_dir))
+			zc->zc_fromobj = dsl_dir_phys(ds->ds_dir)->dd_origin_obj;
+		error = dmu_send_estimate(ds, fromds, compressok || rawok,
 		    &zc->zc_objset_type);
-
-		if (fromsnap != NULL)
-			dsl_dataset_rele(fromsnap, FTAG);
-		dsl_dataset_rele(tosnap, FTAG);
-		dsl_pool_rele(dp, FTAG);
-	} else {
-		file_t *fp = getf(zc->zc_cookie);
-		if (fp == NULL)
-			return (SET_ERROR(EBADF));
-
-		off = fp->f_offset;
-		error = dmu_send_obj(zc->zc_name, zc->zc_sendobj,
-		    zc->zc_fromobj, embedok, large_block_ok, compressok, rawok,
-		    zc->zc_cookie, fp->f_vnode, &off);
-
-		if (VOP_SEEK(fp->f_vnode, fp->f_offset, &off, NULL) == 0)
-			fp->f_offset = off;
-		releasef(zc->zc_cookie);
+		goto out;
 	}
+
+	/* the pool & datasets are always released in dmu_send() */
+	return dmu_send(dp, ds, fromds, /*fromzb*/ NULL, embedok,
+	    large_block_ok, compressok, rawok, /*resumeobj*/ 0, /*resumeoff*/ 0,
+	    /*outfd*/ zc->zc_cookie, FTAG);
+
+out:
+	if (fromds != NULL)
+		dsl_dataset_rele(fromds, FTAG);
+	if (ds != NULL)
+		dsl_dataset_rele(ds, FTAG);
+	dsl_pool_rele(dp, FTAG);
+
 	return (error);
 }
 
@@ -5094,7 +5063,7 @@ zfs_ioc_send_progress(zfs_cmd_t *zc)
 	}
 
 	if (dsp != NULL)
-		zc->zc_cookie = *(dsp->dsa_off);
+		zc->zc_cookie = dsp->dsa_off;
 	else
 		error = SET_ERROR(ENOENT);
 
@@ -6081,16 +6050,19 @@ static int
 zfs_ioc_send_new(const char *snapname, nvlist_t *innvl, nvlist_t *outnvl)
 {
 	int error;
-	offset_t off;
 	char *fromname = NULL;
+	char *fromzb = NULL;
 	int fd;
-	file_t *fp;
 	boolean_t largeblockok;
 	boolean_t embedok;
 	boolean_t compressok;
 	boolean_t rawok;
 	uint64_t resumeobj = 0;
 	uint64_t resumeoff = 0;
+	ds_hold_flags_t dsflags;
+	dsl_pool_t *dp;
+	dsl_dataset_t *ds = NULL;
+	dsl_dataset_t *fromds = NULL;
 
 	fd = fnvlist_lookup_int32(innvl, "fd");
 
@@ -6104,17 +6076,35 @@ zfs_ioc_send_new(const char *snapname, nvlist_t *innvl, nvlist_t *outnvl)
 	(void) nvlist_lookup_uint64(innvl, "resume_object", &resumeobj);
 	(void) nvlist_lookup_uint64(innvl, "resume_offset", &resumeoff);
 
-	if ((fp = getf(fd)) == NULL)
-		return (SET_ERROR(EBADF));
+	error = dsl_pool_hold(snapname, FTAG, &dp);
+	if (error != 0)
+		return (error);
 
-	off = fp->f_offset;
-	error = dmu_send(snapname, fromname, embedok, largeblockok, compressok,
-	    rawok, fd, resumeobj, resumeoff, fp->f_vnode, &off);
+	dsflags = (rawok) ? 0 : DS_HOLD_FLAG_DECRYPT;
+	error = dsl_dataset_hold_flags(dp, snapname, dsflags, FTAG, &ds);
+	if (error != 0)
+		goto out;
 
-	if (VOP_SEEK(fp->f_vnode, fp->f_offset, &off, NULL) == 0)
-		fp->f_offset = off;
+	if (fromname != NULL) {
+		if (strchr(fromname, '@')) {
+			error = dsl_dataset_hold(dp, fromname, FTAG, &fromds);
+		} else {
+			fromzb = fromname;
+		}
+		if (error != 0)
+			return (error);
+	}
 
-	releasef(fd);
+	return dmu_send(dp, ds, fromds, fromzb, embedok, largeblockok,
+	    compressok, rawok, resumeobj, resumeoff, fd, FTAG);
+
+out:
+	if (ds != NULL)
+		dsl_dataset_rele(ds, FTAG);
+	if (fromds != NULL)
+		dsl_dataset_rele(fromds, FTAG);
+	dsl_pool_rele(dp, FTAG);
+
 	return (error);
 }
 
