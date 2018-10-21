@@ -813,6 +813,8 @@ dsl_dataset_sendrecv_cancel_cb(const char *osname, void *arg)
 			err = dsl_dataset_recvstream_cancel(os->os_dsl_dataset);
 	}
 
+	dmu_objset_rele(os, FTAG);
+
 #else
 	fprintf(stderr, "%s: returning EOPNOTSUPP\n", __func__);
 	err = EOPNOTSUPP;

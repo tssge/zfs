@@ -4979,8 +4979,9 @@ zfs_ioc_send(zfs_cmd_t *zc)
 	boolean_t compressok = (zc->zc_flags & 0x4);
 	boolean_t rawok = (zc->zc_flags & 0x8);
 	ds_hold_flags_t dsflags = (rawok) ? 0 : DS_HOLD_FLAG_DECRYPT;
-	dsl_pool_t *dp;
-	dsl_dataset_t *ds, *fromds;
+	dsl_pool_t *dp = NULL;
+	dsl_dataset_t *ds = NULL;
+	dsl_dataset_t *fromds = NULL;
 
 	error = dsl_pool_hold(zc->zc_name, FTAG, &dp);
 	if (error != 0)
@@ -4991,6 +4992,9 @@ zfs_ioc_send(zfs_cmd_t *zc)
 	if (error != 0)
 		goto out;
 
+	if (zc->zc_obj != 0 && dsl_dir_is_clone(ds->ds_dir))
+		zc->zc_fromobj = dsl_dir_phys(ds->ds_dir)->dd_origin_obj;
+
 	if (zc->zc_fromobj != 0) {
 		error = dsl_dataset_hold_obj(dp, zc->zc_fromobj, FTAG, &fromds);
 		if (error != 0)
@@ -4998,8 +5002,6 @@ zfs_ioc_send(zfs_cmd_t *zc)
 	}
 
 	if (estimate) {
-		if (dsl_dir_is_clone(ds->ds_dir))
-			zc->zc_fromobj = dsl_dir_phys(ds->ds_dir)->dd_origin_obj;
 		error = dmu_send_estimate(ds, fromds, compressok || rawok,
 		    &zc->zc_objset_type);
 		goto out;
