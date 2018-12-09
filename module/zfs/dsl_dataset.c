@@ -38,6 +38,9 @@
 #include <sys/dmu_traverse.h>
 #include <sys/dmu_impl.h>
 #include <sys/dmu_tx.h>
+#include <sys/dmu.h>
+#include <sys/dbuf.h>
+#include <sys/dnode.h>
 #include <sys/arc.h>
 #include <sys/zio.h>
 #include <sys/zap.h>
@@ -449,10 +452,6 @@ dsl_dataset_hold_obj_flags(dsl_pool_t *dp, uint64_t dsobj,
 
 	ASSERT(dsl_pool_config_held(dp));
 
-	err = spa_operation_interrupted(dp->dp_spa);
-	if (err != 0)
-		return (err);
-
 	err = dmu_bonus_hold(mos, dsobj, tag, &dbuf);
 	if (err != 0)
 		return (err);
@@ -794,32 +793,86 @@ dsl_dataset_recvstream_cancel(dsl_dataset_t *ds)
 }
 #endif
 
-/* dsl_dataset_{send,recv}stream_cancel callback for dmu_objset_traverse. */
+/* dsl_dataset_sendrecv_cancel_all callback for dsl_dataset_active_foreach. */
 static int
-dsl_dataset_sendrecv_cancel_cb(const char *osname, void *arg)
+dsl_dataset_sendrecv_cancel_cb(dsl_dataset_t *ds, void *arg)
 {
 	int err = 0;
 #ifdef _KERNEL
-	objset_t *os;
 
-	if (dmu_objset_hold(osname, FTAG, &os) != 0) {
-		/* Objset no longer exists, nothing to cancel. */
-		return (0);
-	}
-
-	if (os->os_dsl_dataset != NULL) {
-		err = dsl_dataset_sendstreams_cancel(os->os_dsl_dataset);
-		if (err == 0)
-			err = dsl_dataset_recvstream_cancel(os->os_dsl_dataset);
-	}
-
-	dmu_objset_rele(os, FTAG);
+	err = dsl_dataset_sendstreams_cancel(ds);
+	if (err == 0)
+		err = dsl_dataset_recvstream_cancel(ds);
 
 #else
 	fprintf(stderr, "%s: returning EOPNOTSUPP\n", __func__);
 	err = EOPNOTSUPP;
 #endif
 	return (err);
+}
+
+/*
+ * Enumerate active datasets.  This function is intended for use cases that
+ * want to avoid I/O, and only operate on those that have been loaded in
+ * memory.  This works by enumerating the objects in the MOS that are known,
+ * and calling back with each dataset's MOS object IDs.  It would be nice if
+ * the objset_t's were registered in a spa_t global list, but they're not,
+ * so this implementation is a bit more complex...
+ */
+static int
+dsl_dataset_active_foreach(spa_t *spa, int func(dsl_dataset_t *, void *), void *cl)
+{
+	dsl_pool_t *dp = spa_get_dsl(spa);
+	objset_t *mos = dp->dp_meta_objset;
+	dnode_t *mdn = DMU_META_DNODE(mos);
+	dmu_buf_impl_t *db;
+	uint64_t blkid, dsobj, i;
+	dnode_children_t *children_dnodes;
+	dnode_handle_t *dnh;
+	dsl_dataset_t *ds;
+	objset_t *os;
+	int ret = 0;
+
+	/*
+	 * For each block of the MOS's meta-dnode's full size:
+	 * - If the block is not cached, skip.
+	 * - If the block has no user, skip.
+	 * - For each dnode child of the meta-dnode block:
+	 *   - If not loaded (no dnode handle), ignore
+	 *   - Check object type, if not DMU_OT_OBJSET, ignore
+	 *   - Hold the dataset, call the callback, quit if returns non zero,
+	 *     rele the dataset either way.
+	 */
+	rw_enter(&mdn->dn_struct_rwlock, RW_READER);
+	for (blkid = dsobj = 0;
+	    ret == 0 && blkid < mdn->dn_maxblkid; blkid++,
+	    dsobj += DNODES_PER_BLOCK) {
+		if (dbuf_hold_impl(mdn, 0, blkid, TRUE, TRUE, FTAG, &db) != 0)
+			continue;
+
+		children_dnodes = dmu_buf_get_user(&db->db);
+		if (children_dnodes == NULL)
+			goto skip;
+
+		for (i = 0; ret == 0 && i < DNODES_PER_BLOCK; i++) {
+			dnh = &children_dnodes->dnc_children[i];
+			if (dnh->dnh_dnode == NULL)
+				continue;
+
+			if (dnh->dnh_dnode->dn_type != DMU_OT_OBJSET)
+				continue;
+
+			VERIFY0(dsl_dataset_hold_obj(dp, dsobj + i, FTAG, &ds));
+			ret = func(ds, cl);
+			dsl_dataset_rele(ds, FTAG);
+		}
+
+skip:
+		dbuf_rele(db, FTAG);
+	}
+	rw_exit(&mdn->dn_struct_rwlock);
+
+	return (ret);
 }
 
 /*
@@ -831,8 +884,8 @@ int
 dsl_dataset_sendrecv_cancel_all(spa_t *spa)
 {
 
-	return (dmu_objset_find(spa_name(spa), dsl_dataset_sendrecv_cancel_cb,
-	    NULL, DS_FIND_CHILDREN|DS_FIND_SNAPSHOTS));
+	return (dsl_dataset_active_foreach(spa,
+	    dsl_dataset_sendrecv_cancel_cb, NULL));
 }
 
 void

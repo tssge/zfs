@@ -65,6 +65,7 @@ typedef struct txg_list {
 } txg_list_t;
 
 struct dsl_pool;
+struct dmu_tx;
 
 extern void txg_init(struct dsl_pool *dp, uint64_t txg);
 extern void txg_fini(struct dsl_pool *dp);
@@ -83,14 +84,10 @@ extern void txg_kick(struct dsl_pool *dp);
  * Wait until the given transaction group has finished syncing.
  * Try to make this happen as soon as possible (eg. kick off any
  * necessary syncs immediately).  If txg==0, wait for the currently open
- * txg to finish syncing.
+ * txg to finish syncing.  This may be interrupted due to an exiting pool.
  */
-extern void txg_wait_synced(struct dsl_pool *dp, uint64_t txg);
-
-/*
- * Same as txg_wait_synced, except flags can result in a failure.
- */
-extern int txg_wait_synced_flags(struct dsl_pool *dp, uint64_t txg, uint64_t flags);
+extern int txg_wait_synced(struct dsl_pool *dp, uint64_t txg);
+extern int txg_wait_synced_tx(struct dsl_pool *dp, uint64_t txg, struct dmu_tx *tx);
 
 /*
  * Wait until the given transaction group, or one after it, is
@@ -99,6 +96,8 @@ extern int txg_wait_synced_flags(struct dsl_pool *dp, uint64_t txg, uint64_t fla
  * If txg == 0, wait for the next open txg.
  */
 extern void txg_wait_open(struct dsl_pool *dp, uint64_t txg);
+
+void txg_force_export(spa_t *spa);
 
 /*
  * Returns TRUE if we are "backed up" waiting for the syncing
@@ -110,6 +109,8 @@ extern boolean_t txg_stalled(struct dsl_pool *dp);
 extern boolean_t txg_sync_waiting(struct dsl_pool *dp);
 
 extern void txg_verify(spa_t *spa, uint64_t txg);
+
+extern void txg_completion_notify(struct dsl_pool *dp);
 
 /*
  * Wait for pending commit callbacks of already-synced transactions to finish

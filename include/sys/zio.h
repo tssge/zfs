@@ -420,6 +420,7 @@ typedef zio_t *zio_pipe_stage_t(zio_t *zio);
  */
 #define	ZIO_REEXECUTE_NOW	0x01
 #define	ZIO_REEXECUTE_SUSPEND	0x02
+#define	ZIO_REEXECUTE_CANCELLED	0x04
 
 typedef struct zio_alloc_list {
 	list_t  zal_list;
@@ -624,6 +625,7 @@ extern enum zio_compress zio_compress_select(spa_t *spa,
 extern void zio_suspend(spa_t *spa, zio_t *zio, zio_suspend_reason_t);
 extern int zio_resume(spa_t *spa);
 extern void zio_resume_wait(spa_t *spa);
+extern void zio_cancel(spa_t *spa);
 
 /*
  * Initial setup and teardown.

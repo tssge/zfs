@@ -34,6 +34,8 @@
 #include <sys/zil.h>
 #include <sys/callb.h>
 #include <sys/trace_txg.h>
+#include <sys/dmu_objset.h>
+#include <sys/zio.h>
 
 /*
  * ZFS Transaction Groups
@@ -268,7 +270,8 @@ txg_sync_stop(dsl_pool_t *dp)
 	/*
 	 * We need to ensure that we've vacated the deferred space_maps.
 	 */
-	txg_wait_synced(dp, tx->tx_open_txg + TXG_DEFER_SIZE);
+	if (!spa_exiting_any(dp->dp_spa))
+		txg_wait_synced(dp, tx->tx_open_txg + TXG_DEFER_SIZE);
 
 	/*
 	 * Wake all sync threads and wait for them to die.
@@ -500,6 +503,24 @@ txg_has_quiesced_to_sync(dsl_pool_t *dp)
 	return (tx->tx_quiesced_txg != 0);
 }
 
+/*
+ * Notify of completion.  This is usually only called by the sync thread,
+ * but in force-export/unmount scenarios, it can be called by another thread
+ * that has generated an alternative completion scenario.
+ */
+void
+txg_completion_notify(dsl_pool_t *dp)
+{
+	tx_state_t *tx = &dp->dp_tx;
+	boolean_t locked = MUTEX_HELD(&tx->tx_sync_lock);
+
+	if (!locked)
+		mutex_enter(&tx->tx_sync_lock);
+	cv_broadcast(&tx->tx_sync_done_cv);
+	if (!locked)
+		mutex_exit(&tx->tx_sync_lock);
+}
+
 static void
 txg_sync_thread(void *arg)
 {
@@ -577,7 +598,7 @@ txg_sync_thread(void *arg)
 		tx->tx_syncing_txg = 0;
 		DTRACE_PROBE2(txg__synced, dsl_pool_t *, dp, uint64_t, txg);
 		spa_txg_history_fini_io(spa, ts);
-		cv_broadcast(&tx->tx_sync_done_cv);
+		txg_completion_notify(dp);
 
 		/*
 		 * Dispatch commit callbacks to worker threads.
@@ -669,44 +690,49 @@ txg_delay(dsl_pool_t *dp, uint64_t txg, hrtime_t delay, hrtime_t resolution)
 }
 
 int
-txg_wait_synced_flags(dsl_pool_t *dp, uint64_t txg, uint64_t flags)
+txg_wait_synced_tx(dsl_pool_t *dp, uint64_t txg, dmu_tx_t *tx)
 {
-	tx_state_t *tx = &dp->dp_tx;
+	tx_state_t *dp_tx = &dp->dp_tx;
 	int error = 0;
 	spa_t *spa = dp->dp_spa;
+	objset_t *os = NULL;
 
 	ASSERT(!dsl_pool_config_held(dp));
 
-	mutex_enter(&tx->tx_sync_lock);
-	ASSERT3U(tx->tx_threads, ==, 2);
+	mutex_enter(&dp_tx->tx_sync_lock);
+	ASSERT3U(dp_tx->tx_threads, ==, 2);
 	if (txg == 0)
-		txg = tx->tx_open_txg + TXG_DEFER_SIZE;
-	if (tx->tx_sync_txg_waiting < txg)
-		tx->tx_sync_txg_waiting = txg;
+		txg = dp_tx->tx_open_txg + TXG_DEFER_SIZE;
+	if (dp_tx->tx_sync_txg_waiting < txg)
+		dp_tx->tx_sync_txg_waiting = txg;
+	if (tx != NULL && tx->tx_objset != NULL)
+		os = tx->tx_objset;
 	dprintf("txg=%llu quiesce_txg=%llu sync_txg=%llu\n",
-	    txg, tx->tx_quiesce_txg_waiting, tx->tx_sync_txg_waiting);
-	while (error == 0 && tx->tx_synced_txg < txg) {
+	    txg, dp_tx->tx_quiesce_txg_waiting, dp_tx->tx_sync_txg_waiting);
+	while (error == 0 && dp_tx->tx_synced_txg < txg) {
 		dprintf("broadcasting sync more "
 		    "tx_synced=%llu waiting=%llu dp=%p\n",
-		    tx->tx_synced_txg, tx->tx_sync_txg_waiting, dp);
-		cv_broadcast(&tx->tx_sync_more_cv);
-		if (flags & TXG_NOSUSPEND) {
-			mutex_enter(&spa->spa_suspend_lock);
-			error = spa_suspended(spa) ? EAGAIN : 0;
-			mutex_exit(&spa->spa_suspend_lock);
-		}
+		    dp_tx->tx_synced_txg, dp_tx->tx_sync_txg_waiting, dp);
+		cv_broadcast(&dp_tx->tx_sync_more_cv);
+		/*
+		 * If we are suspended and exiting, give up, because our
+		 * data isn't going to be pushed.
+		 */
+		if (spa_suspended(spa) && spa_exiting_any(spa))
+			error = SET_ERROR(EAGAIN);
+		if (error == 0 && os != NULL && dmu_objset_exiting(os))
+			error = SET_ERROR(EAGAIN);
 		if (error == 0)
-			cv_wait(&tx->tx_sync_done_cv, &tx->tx_sync_lock);
+			cv_wait(&dp_tx->tx_sync_done_cv, &dp_tx->tx_sync_lock);
 	}
-	mutex_exit(&tx->tx_sync_lock);
+	mutex_exit(&dp_tx->tx_sync_lock);
 	return (error);
 }
 
-void
+int
 txg_wait_synced(dsl_pool_t *dp, uint64_t txg)
 {
-
-	(void) txg_wait_synced_flags(dp, txg, 0);
+	return txg_wait_synced_tx(dp, txg, NULL);
 }
 
 void
@@ -768,6 +794,34 @@ txg_sync_waiting(dsl_pool_t *dp)
 
 	return (tx->tx_syncing_txg <= tx->tx_sync_txg_waiting ||
 	    tx->tx_quiesced_txg != 0);
+}
+
+void
+txg_force_export(spa_t *spa)
+{
+	dsl_pool_t *dp = spa_get_dsl(spa);
+	tx_state_t *tx = &dp->dp_tx;
+	uint64_t t, txg;
+	boolean_t complete;
+
+	/*
+	 * When forcing removal, push through TXG_SIZE TXGs to ensure that
+	 * all state is cleaned up by spa_sync().  While waiting for each
+	 * TXG to complete, cancel any suspended zios that appear.
+	 */
+	ASSERT(spa_exiting_any(spa));
+	txg = tx->tx_synced_txg + 1;
+	for (t = 0; t < TXG_SIZE; t++) {
+		txg_wait_open(dp, txg + t);
+
+		for (complete = B_FALSE; !complete;) {
+			zio_cancel(spa);
+			mutex_enter(&tx->tx_sync_lock);
+			cv_wait(&tx->tx_sync_done_cv, &tx->tx_sync_lock);
+			complete = (tx->tx_synced_txg >= (txg + t));
+			mutex_exit(&tx->tx_sync_lock);
+		}
+	}
 }
 
 /*

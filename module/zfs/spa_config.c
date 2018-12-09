@@ -548,50 +548,106 @@ spa_config_generate(spa_t *spa, vdev_t *vd, uint64_t txg, int getstats)
 	return (config);
 }
 
+static int
+spa_config_update_begin(spa_t *spa, void *tag)
+{
+	return (spa_config_enter_flags(spa, SCL_ALL, tag, RW_WRITER,
+	    SCL_FLAG_NOSUSPEND));
+}
+
+/* Complete a label update. */
+static int
+spa_config_update_complete(spa_t *spa, uint64_t txg, boolean_t postsysevent,
+    void *tag)
+{
+	int error;
+
+	spa_config_exit(spa, SCL_ALL, tag);
+
+	/*
+	 * Wait for the mosconfig to be regenerated and synced.
+	 */
+	error = txg_wait_synced(spa->spa_dsl_pool, txg);
+	if (error == 0) {
+		/*
+		 * Update the global config cache to reflect the new mosconfig.
+		 * This operation does not perform any pool I/O, so it is
+		 * safe even if one or more of them are suspended.
+		 */
+		mutex_enter(&spa_namespace_lock);
+		spa_write_cachefile(spa, B_FALSE, postsysevent);
+		mutex_exit(&spa_namespace_lock);
+	}
+
+	return (error);
+}
+
+/* Update any top-level vdevs needing expansion. */
+static int
+spa_config_update_vdevs(spa_t *spa)
+{
+	vdev_t *rvd = spa->spa_root_vdev;
+	uint64_t txg;
+	int c, error;
+
+	error = spa_config_update_begin(spa, FTAG);
+	if (error != 0)
+		return (error);
+
+	txg = spa_last_synced_txg(spa) + 1;
+
+	/*
+	 * If we have top-level vdevs that were added but have
+	 * not yet been prepared for allocation, do that now.
+	 * (It's safe now because the config cache is up to date,
+	 * so it will be able to translate the new DVAs.)
+	 * See comments in spa_vdev_add() for full details.
+	 */
+	for (c = 0; c < rvd->vdev_children; c++) {
+		vdev_t *tvd = rvd->vdev_child[c];
+
+		/*
+		 * Explicitly skip vdevs that are indirect or
+		 * log vdevs that are being removed. The reason
+		 * is that both of those can have vdev_ms_array
+		 * set to 0 and we wouldn't want to change their
+		 * metaslab size nor call vdev_expand() on them.
+		 */
+		if (!vdev_is_concrete(tvd) ||
+		    (tvd->vdev_islog && tvd->vdev_removing))
+			continue;
+
+		if (tvd->vdev_ms_array == 0)
+			vdev_metaslab_set_size(tvd);
+		vdev_expand(tvd, txg);
+	}
+
+	return (spa_config_update_complete(spa, txg, B_TRUE, FTAG));
+}
+
 /*
  * Update all disk labels, generate a fresh config based on the current
  * in-core state, and sync the global config cache (do not sync the config
  * cache if this is a booting rootpool).
  */
-void
-spa_config_update(spa_t *spa, int what)
+int
+spa_config_update_pool(spa_t *spa)
 {
 	vdev_t *rvd = spa->spa_root_vdev;
 	uint64_t txg;
 	int c;
 
-	ASSERT(MUTEX_HELD(&spa_namespace_lock));
+	error = spa_config_update_begin(spa, FTAG);
+	if (error != 0)
+		return (error);
 
-	spa_config_enter(spa, SCL_ALL, FTAG, RW_WRITER);
 	txg = spa_last_synced_txg(spa) + 1;
-	if (what == SPA_CONFIG_UPDATE_POOL) {
-		vdev_config_dirty(rvd);
+	vdev_config_dirty(rvd);
+
+	error = spa_config_update_complete(spa, txg, B_FALSE, FTAG);
+	if (error == 0)
+		error = spa_config_update_vdevs(spa);
 	} else {
-		/*
-		 * If we have top-level vdevs that were added but have
-		 * not yet been prepared for allocation, do that now.
-		 * (It's safe now because the config cache is up to date,
-		 * so it will be able to translate the new DVAs.)
-		 * See comments in spa_vdev_add() for full details.
-		 */
-		for (c = 0; c < rvd->vdev_children; c++) {
-			vdev_t *tvd = rvd->vdev_child[c];
-
-			/*
-			 * Explicitly skip vdevs that are indirect or
-			 * log vdevs that are being removed. The reason
-			 * is that both of those can have vdev_ms_array
-			 * set to 0 and we wouldn't want to change their
-			 * metaslab size nor call vdev_expand() on them.
-			 */
-			if (!vdev_is_concrete(tvd) ||
-			    (tvd->vdev_islog && tvd->vdev_removing))
-				continue;
-
-			if (tvd->vdev_ms_array == 0)
-				vdev_metaslab_set_size(tvd);
-			vdev_expand(tvd, txg);
-		}
 	}
 	spa_config_exit(spa, SCL_ALL, FTAG);
 
@@ -610,6 +666,8 @@ spa_config_update(spa_t *spa, int what)
 
 	if (what == SPA_CONFIG_UPDATE_POOL)
 		spa_config_update(spa, SPA_CONFIG_UPDATE_VDEVS);
+
+	return (error);
 }
 
 #if defined(_KERNEL)

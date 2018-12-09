@@ -1621,6 +1621,11 @@ dmu_objset_write_done(zio_t *zio, arc_buf_t *abuf, void *arg)
 	blkptr_t *bp_orig = &zio->io_bp_orig;
 	objset_t *os = arg;
 
+	if (zio->io_error != 0) {
+		ASSERT(spa_exiting_any(zio->io_spa));
+		goto done;
+	}
+
 	if (zio->io_flags & ZIO_FLAG_IO_REWRITE) {
 		ASSERT(BP_EQUAL(bp, bp_orig));
 	} else {
@@ -1630,6 +1635,8 @@ dmu_objset_write_done(zio_t *zio, arc_buf_t *abuf, void *arg)
 		(void) dsl_dataset_block_kill(ds, bp_orig, tx, B_TRUE);
 		dsl_dataset_block_born(ds, bp, tx);
 	}
+
+done:
 	kmem_free(bp, sizeof (*bp));
 }
 
@@ -1871,10 +1878,12 @@ do_userquota_cacheflush(objset_t *os, userquota_cache_t *cache, dmu_tx_t *tx)
 		 * zap_increment_int().  It's needed because zap_increment_int()
 		 * is not thread-safe (i.e. not atomic).
 		 */
-		mutex_enter(&os->os_userused_lock);
-		VERIFY0(zap_increment(os, DMU_USERUSED_OBJECT,
-		    uqn->uqn_id, uqn->uqn_delta, tx));
-		mutex_exit(&os->os_userused_lock);
+		if (!dmu_objset_exiting(os)) {
+			mutex_enter(&os->os_userused_lock);
+			VERIFY0(zap_increment(os, DMU_USERUSED_OBJECT,
+			    uqn->uqn_id, uqn->uqn_delta, tx));
+			mutex_exit(&os->os_userused_lock);
+		}
 		kmem_free(uqn, sizeof (*uqn));
 	}
 	avl_destroy(&cache->uqc_user_deltas);
@@ -1882,10 +1891,12 @@ do_userquota_cacheflush(objset_t *os, userquota_cache_t *cache, dmu_tx_t *tx)
 	cookie = NULL;
 	while ((uqn = avl_destroy_nodes(&cache->uqc_group_deltas,
 	    &cookie)) != NULL) {
-		mutex_enter(&os->os_userused_lock);
-		VERIFY0(zap_increment(os, DMU_GROUPUSED_OBJECT,
-		    uqn->uqn_id, uqn->uqn_delta, tx));
-		mutex_exit(&os->os_userused_lock);
+		if (!dmu_objset_exiting(os)) {
+			mutex_enter(&os->os_userused_lock);
+			VERIFY0(zap_increment(os, DMU_GROUPUSED_OBJECT,
+			    uqn->uqn_id, uqn->uqn_delta, tx));
+			mutex_exit(&os->os_userused_lock);
+		}
 		kmem_free(uqn, sizeof (*uqn));
 	}
 	avl_destroy(&cache->uqc_group_deltas);
@@ -2014,6 +2025,7 @@ userquota_updates_task(void *arg)
 
 		flags = dn->dn_id_flags;
 		ASSERT(flags);
+
 		if (flags & DN_ID_OLD_EXIST)  {
 			do_userquota_update(os, &cache, dn->dn_oldused,
 			    dn->dn_oldflags, dn->dn_olduid, dn->dn_oldgid,
@@ -2981,6 +2993,51 @@ dmu_objset_willuse_space(objset_t *os, int64_t space, dmu_tx_t *tx)
 		dsl_dir_willuse_space(ds->ds_dir, aspace, tx);
 		dsl_pool_dirty_space(dmu_tx_pool(tx), space, tx);
 	}
+}
+
+/*
+ * Notify the objset that it's being shutdown.  This is primarily useful
+ * when attempting to dislodge any references that might be waiting on a txg
+ * or similar.
+ */
+int
+dmu_objset_shutdown_register(objset_t *os)
+{
+	int ret = 0;
+
+	mutex_enter(&os->os_lock);
+	if (os->os_killer == NULL) {
+		os->os_killer = curthread;
+	} else {
+		ret = SET_ERROR(EBUSY);
+	}
+	mutex_exit(&os->os_lock);
+
+	/*
+	 * Signal things that will check for objset killer.  The calling
+	 * thread must use a secondary mechanism to check for ref drops,
+	 * before calling dmu_objset_shutdown_unregister().
+	 */
+	if (ret == 0) {
+		txg_completion_notify(spa_get_dsl(dmu_objset_spa(os)));
+	}
+
+	return (ret);
+}
+
+boolean_t
+dmu_objset_exiting(objset_t *os)
+{
+
+	return (os->os_killer != NULL || spa_exiting_any(os->os_spa));
+}
+
+void
+dmu_objset_shutdown_unregister(objset_t *os)
+{
+
+	ASSERT3P(os->os_killer, ==, curthread);
+	os->os_killer = NULL;
 }
 
 #if defined(_KERNEL)

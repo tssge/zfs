@@ -1748,7 +1748,7 @@ zfsvfs_teardown(zfsvfs_t *zfsvfs, boolean_t unmounting)
 	 * Evict cached data. We must write out any dirty data before
 	 * disowning the dataset.
 	 */
-	if (!zfs_is_readonly(zfsvfs))
+	if (!dmu_objset_exiting(zfsvfs->z_os) && !zfs_is_readonly(zfsvfs))
 		txg_wait_synced(dmu_objset_pool(zfsvfs->z_os), 0);
 	dmu_objset_evict_dbufs(zfsvfs->z_os);
 
@@ -2245,7 +2245,10 @@ zfs_set_version(zfsvfs_t *zfsvfs, uint64_t newvers)
 
 	zfs_set_fuid_feature(zfsvfs);
 
-	return (0);
+done:
+	if (ret != 0)
+		dmu_objset_shutdown_unregister(os);
+	return (ret);
 }
 
 /*

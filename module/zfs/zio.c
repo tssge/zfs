@@ -2092,12 +2092,24 @@ zio_wait(zio_t *zio)
 	error = zio->io_error;
 	zio_destroy(zio);
 
+	if (error != 0 && (zio->io_flags & ZIO_FLAG_CANFAIL) == 0 &&
+	    zio->io_spa->spa_killer != NULL) {
+		/*
+		 * Don't report errors to the callers.
+		 */
+		error = 0;
+	}
+
 	return (error);
 }
 
 void
 zio_nowait(zio_t *zio)
 {
+
+	if (zio == NULL)
+		return;
+
 	ASSERT3P(zio->io_executor, ==, NULL);
 
 	if (zio->io_child_type == ZIO_CHILD_LOGICAL &&
@@ -2140,11 +2152,22 @@ zio_reexecute(zio_t *pio)
 
 	pio->io_flags = pio->io_orig_flags;
 	pio->io_stage = pio->io_orig_stage;
-	pio->io_pipeline = pio->io_orig_pipeline;
-	pio->io_reexecute = 0;
+	if (spa_exiting_any(pio->io_spa)) {
+		/*
+		 * This pool is being forcibly exported; skip everything and
+		 * finish as soon as possible.
+		 */
+		pio->io_pipeline = ZIO_INTERLOCK_PIPELINE;
+		if (pio->io_error == 0)
+			pio->io_error = SET_ERROR(EIO);
+		pio->io_reexecute = ZIO_REEXECUTE_CANCELLED;
+	} else {
+		pio->io_pipeline = pio->io_orig_pipeline;
+		pio->io_error = 0;
+		pio->io_reexecute = 0;
+	}
 	pio->io_flags |= ZIO_FLAG_REEXECUTED;
 	pio->io_pipeline_trace = 0;
-	pio->io_error = 0;
 	for (int w = 0; w < ZIO_WAIT_TYPES; w++)
 		pio->io_state[w] = 0;
 	for (int c = 0; c < ZIO_CHILD_TYPES; c++)
@@ -2186,6 +2209,8 @@ zio_reexecute(zio_t *pio)
 void
 zio_suspend(spa_t *spa, zio_t *zio, zio_suspend_reason_t reason)
 {
+	dsl_pool_t *dp = spa_get_dsl(spa);
+
 	if (spa_get_failmode(spa) == ZIO_FAILURE_MODE_PANIC)
 		fm_panic("Pool '%s' has encountered an uncorrectable I/O "
 		    "failure and the failure mode property for this pool "
@@ -2216,6 +2241,63 @@ zio_suspend(spa_t *spa, zio_t *zio, zio_suspend_reason_t reason)
 	}
 
 	mutex_exit(&spa->spa_suspend_lock);
+
+	/* Notify waiters that might care about this state transition. */
+	for (int i = 0; i < SCL_LOCKS; i++)
+		cv_broadcast(&spa->spa_config_lock[i].scl_cv);
+	cv_broadcast(&spa->spa_evicting_os_cv);
+	txg_completion_notify(dp);
+}
+
+static zio_t *
+zio_unsuspend(spa_t *spa)
+{
+	zio_t *pio;
+
+	mutex_enter(&spa->spa_suspend_lock);
+	spa->spa_suspended = ZIO_SUSPEND_NONE;
+	cv_broadcast(&spa->spa_suspend_cv);
+	pio = spa->spa_suspend_zio_root;
+	spa->spa_suspend_zio_root = NULL;
+	mutex_exit(&spa->spa_suspend_lock);
+
+	return pio;
+}
+
+void
+zio_cancel(spa_t *spa)
+{
+	zio_link_t *zl = NULL;
+	zio_t *pio, *cio, *cio_next;
+
+	/*
+	 * Interrupt all physical zios.
+	 * Only meaningful in the context of a forced export.
+	 */
+	mutex_enter(&spa->spa_suspend_lock);
+	pio = spa->spa_suspend_zio_root;
+	spa->spa_suspend_zio_root = NULL;
+	cv_broadcast(&spa->spa_suspend_cv);
+	mutex_exit(&spa->spa_suspend_lock);
+	if (pio == NULL)
+		return;
+
+#if 0
+	mutex_enter(&pio->io_lock);
+	for (cio = zio_walk_children(pio, &zl); cio != NULL; cio = cio_next) {
+		cio_next = zio_walk_children(pio, &zl);
+		mutex_enter(&cio->io_lock);
+		if (cio->io_error == 0)
+			cio->io_error = SET_ERROR(EINTR);
+		cio->io_orig_pipeline = ZIO_INTERLOCK_PIPELINE;
+		cio->io_pipeline = ZIO_INTERLOCK_PIPELINE;
+		mutex_exit(&cio->io_lock);
+	}
+	mutex_exit(&pio->io_lock);
+#endif
+
+	zio_reexecute(pio);
+	zio_nowait(pio);
 }
 
 int
@@ -2224,15 +2306,17 @@ zio_resume(spa_t *spa)
 	zio_t *pio;
 
 	/*
+	 * Issue an async request to update the pool's configuration in case
+	 * suspension occurred while such an update was in progress.  This
+	 * will restart the update process from the beginning.  We could
+	 * make it conditional, but it's safer not to.
+	 */
+	spa_async_request(spa, SPA_ASYNC_CONFIG_UPDATE);
+
+	/*
 	 * Reexecute all previously suspended i/o.
 	 */
-	mutex_enter(&spa->spa_suspend_lock);
-	spa->spa_suspended = ZIO_SUSPEND_NONE;
-	cv_broadcast(&spa->spa_suspend_cv);
-	pio = spa->spa_suspend_zio_root;
-	spa->spa_suspend_zio_root = NULL;
-	mutex_exit(&spa->spa_suspend_lock);
-
+	pio = zio_unsuspend(spa);
 	if (pio == NULL)
 		return (0);
 
@@ -4181,7 +4265,7 @@ zio_ready(zio_t *zio)
 		return (NULL);
 	}
 
-	if (zio->io_ready) {
+	if (zio->io_ready && zio->io_spa->spa_killer == NULL) {
 		ASSERT(IO_IS_ALLOCATING(zio));
 		ASSERT(bp->blk_birth == zio->io_txg || BP_IS_HOLE(bp) ||
 		    (zio->io_flags & ZIO_FLAG_NOPWRITE));
@@ -4328,6 +4412,13 @@ zio_done(zio_t *zio)
 	}
 
 	/*
+	 * If the pool is forcibly exporting, make sure everything is
+	 * thrown away, as nothing can be trusted now.
+	 */
+	if (spa_exiting_any(spa) && zio->io_error == 0)
+		zio->io_error = SET_ERROR(EIO);
+
+	/*
 	 * If the allocation throttle is enabled, then update the accounting.
 	 * We only track child I/Os that are part of an allocating async
 	 * write. We must do this since the allocation is performed
@@ -4429,7 +4520,7 @@ zio_done(zio_t *zio)
 			    zio->io_vd, &zio->io_bookmark, zio, 0, 0);
 	}
 
-	if (zio->io_error) {
+	if (zio->io_error && !spa_exiting_any(spa)) {
 		/*
 		 * If this I/O is attached to a particular vdev,
 		 * generate an error message describing the I/O failure
@@ -4559,7 +4650,20 @@ zio_done(zio_t *zio)
 			}
 		}
 
-		if ((pio = zio_unique_parent(zio)) != NULL) {
+		if (zio->io_reexecute & ZIO_REEXECUTE_CANCELLED) {
+			/*
+			 * This zio had been marked for reexecute previously,
+			 * and upon reexecution, found the pool being forcibly
+			 * exported.  Nothing to do now but clean up.
+			 *
+			 * This special flag is used because it allows the
+			 * zio pipeline to mark all zios in the tree as
+			 * cancelled, before cleaning them up.
+			 */
+			ASSERT3U(zio->io_error, !=, 0);
+			zio->io_reexecute = 0;
+			goto finish;
+		} else if ((pio = zio_unique_parent(zio)) != NULL) {
 			/*
 			 * We're not a root i/o, so there's nothing to do
 			 * but notify our parent.  Don't propagate errors
@@ -4592,9 +4696,11 @@ zio_done(zio_t *zio)
 		return (NULL);
 	}
 
+finish:
 	ASSERT(zio->io_child_count == 0);
 	ASSERT(zio->io_reexecute == 0);
-	ASSERT(zio->io_error == 0 || (zio->io_flags & ZIO_FLAG_CANFAIL));
+	ASSERT(zio->io_error == 0 || (zio->io_flags & ZIO_FLAG_CANFAIL) ||
+	    zio->io_spa->spa_killer != NULL);
 
 	/*
 	 * Report any checksum errors, since the I/O is complete.

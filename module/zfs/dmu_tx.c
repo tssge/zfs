@@ -885,6 +885,16 @@ dmu_tx_try_assign(dmu_tx_t *tx, uint64_t txg_how)
 		DMU_TX_STAT_BUMP(dmu_tx_suspended);
 
 		/*
+		 * If the user is forcibly exporting the pool or the objset,
+		 * indicate to the caller that they need to give up.
+		 */
+		if (spa_exiting_any(spa))
+			return (SET_ERROR(EIO));
+
+		if (tx->tx_objset != NULL && dmu_objset_exiting(tx->tx_objset))
+			return (SET_ERROR(EIO));
+
+		/*
 		 * If the user has indicated a blocking failure mode
 		 * then return ERESTART which will block in dmu_tx_wait().
 		 * Otherwise, return EIO so that an error can get
@@ -894,7 +904,7 @@ dmu_tx_try_assign(dmu_tx_t *tx, uint64_t txg_how)
 		 * of the failuremode setting.
 		 */
 		if (spa_get_failmode(spa) == ZIO_FAILURE_MODE_CONTINUE &&
-		    (txg_how & (TXG_WAIT|TXG_NOSUSPEND)) != TXG_WAIT)
+		    !(txg_how & TXG_WAIT))
 			return (SET_ERROR(EIO));
 
 		return (SET_ERROR(ERESTART));
@@ -1022,7 +1032,7 @@ dmu_tx_assign(dmu_tx_t *tx, uint64_t txg_how)
 	int err;
 
 	ASSERT(tx->tx_txg == 0);
-	ASSERT0(txg_how & ~(TXG_WAIT | TXG_NOTHROTTLE | TXG_NOSUSPEND));
+	ASSERT0(txg_how & ~(TXG_WAIT | TXG_NOTHROTTLE));
 	ASSERT(!dsl_pool_sync_context(tx->tx_pool));
 
 	/* If we might wait, we must not hold the config lock. */
@@ -1091,8 +1101,11 @@ dmu_tx_wait(dmu_tx_t *tx)
 		 * has become active after this thread has tried to
 		 * obtain a tx.  If that's the case then tx_lasttried_txg
 		 * would not have been set.
+		 *
+		 * It's also possible the pool will be force exported, in
+		 * which case we'll try again and notice this fact, and exit.
 		 */
-		txg_wait_synced(dp, spa_last_synced_txg(spa) + 1);
+		txg_wait_synced_tx(dp, spa_last_synced_txg(spa) + 1, tx);
 	} else if (tx->tx_needassign_txh) {
 		dnode_t *dn = tx->tx_needassign_txh->txh_dnode;
 
@@ -1106,8 +1119,11 @@ dmu_tx_wait(dmu_tx_t *tx)
 		 * If we have a lot of dirty data just wait until we sync
 		 * out a TXG at which point we'll hopefully have synced
 		 * a portion of the changes.
+		 *
+		 * It's also possible the pool will be force exported, in
+		 * which case we'll try again and notice this fact, and exit.
 		 */
-		txg_wait_synced(dp, spa_last_synced_txg(spa) + 1);
+		txg_wait_synced_tx(dp, spa_last_synced_txg(spa) + 1, tx);
 	}
 
 	spa_tx_assign_add_nsecs(spa, gethrtime() - before);

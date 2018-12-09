@@ -1689,7 +1689,9 @@ zfs_ioc_pool_export(zfs_cmd_t *zc)
 	boolean_t force = (boolean_t)zc->zc_cookie;
 	boolean_t hardforce = (boolean_t)zc->zc_guid;
 
-	zfs_log_history(zc);
+	if (!force && !hardforce)
+		zfs_log_history(zc);
+
 	error = spa_export(zc->zc_name, NULL, force, hardforce);
 
 	return (error);
@@ -5008,7 +5010,7 @@ zfs_ioc_send(zfs_cmd_t *zc)
 	}
 
 	/* the pool & datasets are always released in dmu_send() */
-	return dmu_send(dp, ds, fromds, /*fromzb*/ NULL, embedok,
+	error = dmu_send(&dp, ds, fromds, /*fromzb*/ NULL, embedok,
 	    large_block_ok, compressok, rawok, /*resumeobj*/ 0, /*resumeoff*/ 0,
 	    /*outfd*/ zc->zc_cookie, FTAG);
 
@@ -5017,7 +5019,8 @@ out:
 		dsl_dataset_rele(fromds, FTAG);
 	if (ds != NULL)
 		dsl_dataset_rele(ds, FTAG);
-	dsl_pool_rele(dp, FTAG);
+	if (dp != NULL)
+		dsl_pool_rele(dp, FTAG);
 
 	return (error);
 }
@@ -6062,7 +6065,7 @@ zfs_ioc_send_new(const char *snapname, nvlist_t *innvl, nvlist_t *outnvl)
 	uint64_t resumeobj = 0;
 	uint64_t resumeoff = 0;
 	ds_hold_flags_t dsflags;
-	dsl_pool_t *dp;
+	dsl_pool_t *dp = NULL;
 	dsl_dataset_t *ds = NULL;
 	dsl_dataset_t *fromds = NULL;
 
@@ -6097,7 +6100,7 @@ zfs_ioc_send_new(const char *snapname, nvlist_t *innvl, nvlist_t *outnvl)
 			return (error);
 	}
 
-	return dmu_send(dp, ds, fromds, fromzb, embedok, largeblockok,
+	error = dmu_send(&dp, ds, fromds, fromzb, embedok, largeblockok,
 	    compressok, rawok, resumeobj, resumeoff, fd, FTAG);
 
 out:
@@ -6105,7 +6108,8 @@ out:
 		dsl_dataset_rele(ds, FTAG);
 	if (fromds != NULL)
 		dsl_dataset_rele(fromds, FTAG);
-	dsl_pool_rele(dp, FTAG);
+	if (dp != NULL)
+		dsl_pool_rele(dp, FTAG);
 
 	return (error);
 }

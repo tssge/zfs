@@ -434,7 +434,7 @@ spa_config_lock_init(spa_t *spa)
 		spa_config_lock_t *scl = &spa->spa_config_lock[i];
 		mutex_init(&scl->scl_lock, NULL, MUTEX_DEFAULT, NULL);
 		cv_init(&scl->scl_cv, NULL, CV_DEFAULT, NULL);
-		refcount_create_untracked(&scl->scl_count);
+		refcount_create_tracked(&scl->scl_count);
 		scl->scl_writer = NULL;
 		scl->scl_write_wanted = 0;
 	}
@@ -453,45 +453,32 @@ spa_config_lock_destroy(spa_t *spa)
 	}
 }
 
-int
-spa_config_tryenter(spa_t *spa, int locks, void *tag, krw_t rw)
+static int
+spa_config_eval_flags(spa_t *spa, spa_config_flag_t flags)
 {
-	for (int i = 0; i < SCL_LOCKS; i++) {
-		spa_config_lock_t *scl = &spa->spa_config_lock[i];
-		if (!(locks & (1 << i)))
-			continue;
-		mutex_enter(&scl->scl_lock);
-		if (rw == RW_READER) {
-			if (scl->scl_writer || scl->scl_write_wanted) {
-				mutex_exit(&scl->scl_lock);
-				spa_config_exit(spa, locks & ((1 << i) - 1),
-				    tag);
-				return (0);
-			}
-		} else {
-			ASSERT(scl->scl_writer != curthread);
-			if (!refcount_is_zero(&scl->scl_count)) {
-				mutex_exit(&scl->scl_lock);
-				spa_config_exit(spa, locks & ((1 << i) - 1),
-				    tag);
-				return (0);
-			}
-			scl->scl_writer = curthread;
-		}
-		(void) refcount_add(&scl->scl_count, tag);
-		mutex_exit(&scl->scl_lock);
+	int error = 0;
+
+	if ((flags & SCL_FLAG_TRYENTER) != 0)
+		error = EAGAIN;
+	if (error == 0 && ((flags & SCL_FLAG_NOSUSPEND) != 0)) {
+		/* Notification given by zio_suspend(). */
+		mutex_enter(&spa->spa_suspend_lock);
+		error = spa_suspended(spa) ? EAGAIN : 0;
+		mutex_exit(&spa->spa_suspend_lock);
 	}
-	return (1);
+	return (error);
 }
 
-void
-spa_config_enter(spa_t *spa, int locks, void *tag, krw_t rw)
+int
+_spa_config_enter_flags(spa_t *spa, int locks, void *tag, krw_t rw,
+    spa_config_flag_t flags, const char *file, size_t line)
 {
+	int error = 0;
 	int wlocks_held = 0;
 
 	ASSERT3U(SCL_LOCKS, <, sizeof (wlocks_held) * NBBY);
 
-	for (int i = 0; i < SCL_LOCKS; i++) {
+	for (int i = 0; error == 0 && i < SCL_LOCKS; i++) {
 		spa_config_lock_t *scl = &spa->spa_config_lock[i];
 		if (scl->scl_writer == curthread)
 			wlocks_held |= (1 << i);
@@ -500,21 +487,53 @@ spa_config_enter(spa_t *spa, int locks, void *tag, krw_t rw)
 		mutex_enter(&scl->scl_lock);
 		if (rw == RW_READER) {
 			while (scl->scl_writer || scl->scl_write_wanted) {
+				error = spa_config_eval_flags(spa, flags);
+				if (error != 0)
+					break;
 				cv_wait(&scl->scl_cv, &scl->scl_lock);
 			}
 		} else {
 			ASSERT(scl->scl_writer != curthread);
 			while (!refcount_is_zero(&scl->scl_count)) {
+				error = spa_config_eval_flags(spa, flags);
+				if (error != 0)
+					break;
 				scl->scl_write_wanted++;
 				cv_wait(&scl->scl_cv, &scl->scl_lock);
 				scl->scl_write_wanted--;
 			}
-			scl->scl_writer = curthread;
+			if (error == 0)
+				scl->scl_writer = curthread;
 		}
-		(void) refcount_add(&scl->scl_count, tag);
+		if (error == 0)
+			(void) _refcount_add(&scl->scl_count, tag, file, line);
 		mutex_exit(&scl->scl_lock);
+
+		if (error != 0 && i > 0) {
+			/* Should never happen for classic spa_config_enter. */
+			ASSERT3U(flags & SCL_FLAG_NOSUSPEND, !=, 0);
+			spa_config_exit(spa, locks & ((1 << i) - 1), tag);
+		}
 	}
+
 	ASSERT3U(wlocks_held, <=, locks);
+	return (error);
+}
+
+void
+_spa_config_enter(spa_t *spa, int locks, void *tag, krw_t rw,
+    const char *file, size_t line)
+{
+	_spa_config_enter_flags(spa, locks, tag, rw, /*flags*/0, file, line);
+}
+
+int
+_spa_config_tryenter(spa_t *spa, int locks, void *tag, krw_t rw,
+    const char *file, size_t line)
+{
+
+	return (_spa_config_enter_flags(spa, locks, tag, rw,
+	    SCL_FLAG_TRYENTER, file, line) == 0);
 }
 
 void
@@ -663,7 +682,7 @@ spa_add(const char *name, nvlist_t *config, const char *altroot)
 	spa->spa_deadman_ziotime = MSEC2NSEC(zfs_deadman_ziotime_ms);
 	spa_set_deadman_failmode(spa, zfs_deadman_failmode);
 
-	refcount_create(&spa->spa_refcount);
+	refcount_create_tracked(&spa->spa_refcount);
 	spa_config_lock_init(spa);
 	spa_stats_init(spa);
 
@@ -837,11 +856,11 @@ spa_next(spa_t *prev)
  * have the namespace lock held.
  */
 void
-spa_open_ref(spa_t *spa, void *tag)
+_spa_open_ref(spa_t *spa, void *tag, const char *file, size_t line)
 {
 	ASSERT(refcount_count(&spa->spa_refcount) >= spa->spa_minref ||
 	    MUTEX_HELD(&spa_namespace_lock));
-	(void) refcount_add(&spa->spa_refcount, tag);
+	(void) _refcount_add(&spa->spa_refcount, tag, file, line);
 }
 
 /*
@@ -1244,7 +1263,7 @@ spa_vdev_exit(spa_t *spa, vdev_t *vd, uint64_t txg, int error)
  * Lock the given spa_t for the purpose of changing vdev state.
  */
 void
-spa_vdev_state_enter(spa_t *spa, int oplocks)
+_spa_vdev_state_enter(spa_t *spa, int oplocks, const char *file, size_t line)
 {
 	int locks = SCL_STATE_ALL | oplocks;
 
@@ -1261,11 +1280,11 @@ spa_vdev_state_enter(spa_t *spa, int oplocks)
 		int low = locks & ~(SCL_ZIO - 1);
 		int high = locks & ~low;
 
-		spa_config_enter(spa, high, spa, RW_WRITER);
+		_spa_config_enter(spa, high, spa, RW_WRITER, file, line);
 		vdev_hold(spa->spa_root_vdev);
-		spa_config_enter(spa, low, spa, RW_WRITER);
+		_spa_config_enter(spa, low, spa, RW_WRITER, file, line);
 	} else {
-		spa_config_enter(spa, locks, spa, RW_WRITER);
+		_spa_config_enter(spa, locks, spa, RW_WRITER, file, line);
 	}
 	spa->spa_vdev_locks = locks;
 }
@@ -1714,6 +1733,19 @@ uint64_t
 spa_syncing_txg(spa_t *spa)
 {
 	return (spa->spa_syncing_txg);
+}
+
+/*
+ * Verify that the requesting thread isn't dirtying a txg it's not supposed
+ * to be.  Normally, this must be spa_final_dirty_txg(), but if the pool is
+ * being force exported, no data will be written to stable storage anyway.
+ */
+void
+spa_verify_dirty_txg(spa_t *spa, uint64_t txg)
+{
+
+	if (spa->spa_killer == NULL)
+		VERIFY3U(txg, <=, spa_final_dirty_txg(spa));
 }
 
 /*
@@ -2319,6 +2351,12 @@ spa_maxblocksize(spa_t *spa)
 		return (SPA_OLD_MAXBLOCKSIZE);
 }
 
+boolean_t
+spa_exiting_any(spa_t *spa)
+{
+	return (spa->spa_killer != NULL);
+}
+
 /*
  * NB: must hold spa_namespace_lock or spa_evicting_os_lock if the result of
  *     this is critical.
@@ -2326,7 +2364,7 @@ spa_maxblocksize(spa_t *spa)
 boolean_t
 spa_exiting(spa_t *spa)
 {
-	return (spa->spa_killer != NULL && spa->spa_killer != curthread);
+	return (spa_exiting_any(spa) && spa->spa_killer != curthread);
 }
 
 int

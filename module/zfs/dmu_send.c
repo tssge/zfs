@@ -962,7 +962,7 @@ get_next_record(bqueue_t *bq, struct send_block_record *data)
 
 static int
 dmu_send_init(struct send_thread_arg *to_arg, dsl_pool_t *dp,
-    dsl_dataset_t *to_ds, dsl_dataset_t *fromds,
+    dsl_dataset_t *to_ds,
     int outfd, uint64_t resumeobj, uint64_t resumeoff,
     zfs_bookmark_phys_t *ancestor_zb, boolean_t is_clone,
     boolean_t embedok, boolean_t large_block_ok,
@@ -1118,9 +1118,10 @@ dmu_send_init(struct send_thread_arg *to_arg, dsl_pool_t *dp,
 		fnvlist_free(nvl);
 	}
 
-	dsp->dsa_fp = fp;
 	dsp->dsa_outfd = outfd;
 	dsp->dsa_proc = curproc;
+	dsp->dsa_td = curthread;
+	dsp->dsa_fp = fp;
 	dsp->dsa_os = os;
 	dsp->dsa_off = fp->f_offset;
 	dsp->dsa_toguid = dsl_dataset_phys(to_ds)->ds_guid;
@@ -1142,15 +1143,18 @@ static int
 send_register(dsl_pool_t *dp, dsl_dataset_t *ds, dmu_sendarg_t *dsp,
     boolean_t owned, void *tag)
 {
-	int err;
+	int err = 0;
 	spa_t *spa = dp->dp_spa;
+	dsl_dataset_t *nds;
 
 	spa_evicting_os_lock(spa);
 	err = spa_exiting(spa) == B_FALSE ? 0 : SET_ERROR(ENXIO);
 	if (err == 0) {
+		/* Will be released in send_unregister */
 		if (owned) {
-			if (!dsl_dataset_tryown(ds, tag))
-				err = SET_ERROR(EBUSY);
+			err = dsl_dataset_own_obj(dp, ds->ds_object, tag, &nds);
+			if (err == 0)
+				ASSERT3P(nds, ==, ds);
 		} else
 			dsl_dataset_long_hold(ds, tag);
 	}
@@ -1163,17 +1167,34 @@ send_register(dsl_pool_t *dp, dsl_dataset_t *ds, dmu_sendarg_t *dsp,
 
 	return (err);
 }
+
+static void
+send_unregister(dsl_dataset_t *ds, dmu_sendarg_t *dsp,
+    boolean owned, void *tag)
+{
+
+	if (owned) {
+		dsl_dataset_disown(ds, tag);
+	} else {
+		dsl_dataset_long_rele(ds, tag);
+	}
+
+	mutex_enter(&ds->ds_sendstream_lock);
+	list_remove(&ds->ds_sendstreams, dsp);
+	mutex_exit(&ds->ds_sendstream_lock);
+}
 #endif
 
 int
-dmu_send(dsl_pool_t *dp, dsl_dataset_t *ds, dsl_dataset_t *fromds, char *fromzb,
-    boolean_t embedok, boolean_t large_block_ok,
+dmu_send(dsl_pool_t **dpp, dsl_dataset_t *to_ds, dsl_dataset_t *fromds,
+    char *fromzb, boolean_t embedok, boolean_t large_block_ok,
     boolean_t compressok, boolean_t rawok,
     uint64_t resumeobj, uint64_t resumeoff,
     int outfd, void *tag)
 {
 	int err;
 #ifdef _KERNEL
+	dsl_pool_t *dp = *dpp;
 	dmu_sendarg_t *dsp;
 	dmu_replay_record_t *drr;
 	boolean_t owned = B_FALSE;
@@ -1188,9 +1209,7 @@ dmu_send(dsl_pool_t *dp, dsl_dataset_t *ds, dsl_dataset_t *fromds, char *fromzb,
 
 	/* Common setup if an incremental is being performed. */
 	if (fromds != NULL) {
-		if (!dsl_dataset_is_before(ds, fromds, 0)) {
-			dsl_dataset_rele(fromds, tag);
-			dsl_pool_rele(dp, tag);
+		if (!dsl_dataset_is_before(to_ds, fromds, 0)) {
 			return (SET_ERROR(EXDEV));
 		}
 		ASSERT3P(fromzb, ==, NULL);
@@ -1198,47 +1217,44 @@ dmu_send(dsl_pool_t *dp, dsl_dataset_t *ds, dsl_dataset_t *fromds, char *fromzb,
 		    dsl_dataset_phys(fromds)->ds_creation_time;
 		zb.zbm_creation_txg = dsl_dataset_phys(fromds)->ds_creation_txg;
 		zb.zbm_guid = dsl_dataset_phys(fromds)->ds_guid;
-		is_clone = (fromds->ds_dir != ds->ds_dir);
+		is_clone = (fromds->ds_dir != to_ds->ds_dir);
 	} else if (fromzb != NULL) {
 		ASSERT3P(fromds, ==, NULL);
-		err = dsl_bookmark_lookup(dp, fromzb, ds, &zb);
-		if (err != 0) {
-			dsl_pool_rele(dp, tag);
+		err = dsl_bookmark_lookup(dp, fromzb, to_ds, &zb);
+		if (err != 0)
 			return (err);
-		}
 	}
 
-	err = dmu_send_init(&to_arg, dp, ds, fromds, outfd,
+	err = dmu_send_init(&to_arg, dp, to_ds, fromds, outfd,
 	    resumeobj, resumeoff,
 	    (fromds != NULL || fromzb != NULL) ? &zb : NULL, is_clone,
 	    embedok, large_block_ok, compressok, rawok, &payload, &dsp);
-	if (fromds != NULL)
-		dsl_dataset_rele(fromds, tag);
-	if (err != 0) {
-		dsl_pool_rele(dp, tag);
+	if (err != 0)
 		return (err);
-	}
 
-	err = send_register(dp, ds, dsp, owned, tag);
-	if (err != 0) {
-		dsl_dataset_rele(ds, tag);
+	owned = (!to_ds->ds_is_snapshot && spa_writeable(dp->dp_spa));
+	err = send_register(dp, to_ds, dsp, owned, tag);
+	if (err != 0)
 		goto regfail;
-	}
 
+	/*
+	 * At this point, the pool must be released as operations below can
+	 * require making changes.
+	 */
 	dsl_pool_rele(dp, tag);
+	*dpp = dp = NULL;
 
-	/* All setup complete, initiate send. */
 	drr = &dsp->dsa_drr;
 	err = dump_record(dsp, payload, drr->drr_payloadlen);
 	if (err != 0) {
 		err = dsp->dsa_err;
-		goto errout;
+		goto out;
 	}
 
 	err = bqueue_init(&to_arg.q,
 	    MAX(zfs_send_queue_length, 2 * zfs_max_recordsize),
 	    offsetof(struct send_block_record, ln));
-	to_arg.ds = ds;
+	to_arg.ds = to_ds;
 	to_arg.flags = TRAVERSE_PRE | TRAVERSE_PREFETCH;
 	if (rawok)
 		to_arg.flags |= TRAVERSE_NO_DECRYPT;
@@ -1270,7 +1286,7 @@ dmu_send(dsl_pool_t *dp, dsl_dataset_t *ds, dsl_dataset_t *fromds, char *fromzb,
 		err = to_arg.error_code;
 
 	if (err != 0)
-		goto errout;
+		goto out;
 
 	if (dsp->dsa_pending_op != PENDING_NONE)
 		if (dump_record(dsp, NULL, 0) != 0)
@@ -1279,7 +1295,7 @@ dmu_send(dsl_pool_t *dp, dsl_dataset_t *ds, dsl_dataset_t *fromds, char *fromzb,
 	if (err != 0) {
 		if (err == EINTR && dsp->dsa_err != 0)
 			err = dsp->dsa_err;
-		goto errout;
+		goto out;
 	}
 
 	bzero(drr, sizeof (dmu_replay_record_t));
@@ -1290,11 +1306,8 @@ dmu_send(dsl_pool_t *dp, dsl_dataset_t *ds, dsl_dataset_t *fromds, char *fromzb,
 	if (dump_record(dsp, NULL, 0) != 0)
 		err = dsp->dsa_err;
 
-errout:
-	if (!owned)
-		dsl_dataset_rele_flags(ds, dsflags, tag);
-	else
-		dsl_dataset_disown(ds, dsflags, tag);
+out:
+	send_unregister(to_ds, dsp, owned, tag);
 
 regfail:
 	vp = dsp->dsa_fp->f_vnode;
@@ -1828,7 +1841,7 @@ dmu_recv_begin_sync(void *arg, dmu_tx_t *tx)
 	struct drr_begin *drrb = drba->drba_cookie->drc_drrb;
 	const char *tofs = drba->drba_cookie->drc_tofs;
 	uint64_t featureflags = DMU_GET_FEATUREFLAGS(drrb->drr_versioninfo);
-	dsl_dataset_t *ds, *newds;
+	dsl_dataset_t *ds, *newds, *newds_ref;
 	objset_t *os;
 	uint64_t dsobj;
 	ds_hold_flags_t dsflags = 0;
@@ -1895,10 +1908,20 @@ dmu_recv_begin_sync(void *arg, dmu_tx_t *tx)
 		drba->drba_cookie->drc_newfs = B_TRUE;
 	}
 
+	/*
+	 * The dataset must be marked inconsistent before exit in any event,
+	 * so dirty it now.  The own requires the flag to be set afterwards.
+	 */
+	VERIFY0(dsl_dataset_hold_obj(dp, dsobj, FTAG, &newds_ref));
+	dmu_buf_will_dirty(newds_ref->ds_dbuf, tx);
+
 	error = recv_own(dp, dsobj, dsflags, drba->drba_cookie, &newds, &os);
+	dsl_dataset_phys(newds_ref)->ds_flags |= DS_FLAG_INCONSISTENT;
+	dsl-dataset_rele(newds_ref, FTAG);
 	if (error != 0)
 		return;
 
+	VERIFY3P(newds_ref, ==, newds);
 	if (drba->drba_cookie->drc_resumable) {
 		dsl_dataset_zapify(newds, tx);
 		if (drrb->drr_fromguid != 0) {
@@ -1944,9 +1967,6 @@ dmu_recv_begin_sync(void *arg, dmu_tx_t *tx)
 		os->os_encrypted = B_TRUE;
 		drba->drba_cookie->drc_raw = B_TRUE;
 	}
-
-	dmu_buf_will_dirty(newds->ds_dbuf, tx);
-	dsl_dataset_phys(newds)->ds_flags |= DS_FLAG_INCONSISTENT;
 
 	/*
 	 * If we actually created a non-clone, we need to create the objset
@@ -2125,9 +2145,9 @@ dmu_recv_resume_begin_sync(void *arg, dmu_tx_t *tx)
 	dmu_buf_will_dirty(ds->ds_dbuf, tx);
 	dsl_dataset_phys(ds)->ds_flags &= ~DS_FLAG_INCONSISTENT;
 	dsobj = ds->ds_object;
+	dsl_dataset_rele_flags(ds, dsflags, FTAG);
 
 	error = recv_own(dp, dsobj, dsflags, drba->drba_cookie, &ds, &os);
-	dsl_dataset_rele_flags(ds, dsflags, FTAG);
 	if (error != 0)
 		return;
 
@@ -2154,6 +2174,7 @@ dmu_recv_begin(char *tofs, char *tosnap, dmu_replay_record_t *drr_begin,
     nvlist_t *hidden_args, char *origin, file_t *fp, dmu_recv_cookie_t *drc)
 {
 	dmu_recv_begin_arg_t drba = { 0 };
+	int err;
 
 	bzero(drc, sizeof (dmu_recv_cookie_t));
 	drc->drc_fp = fp;
@@ -2184,12 +2205,10 @@ dmu_recv_begin(char *tofs, char *tosnap, dmu_replay_record_t *drr_begin,
 
 	if (DMU_GET_FEATUREFLAGS(drc->drc_drrb->drr_versioninfo) &
 	    DMU_BACKUP_FEATURE_RESUMING) {
-		return (dsl_sync_task(tofs,
+		err = dsl_sync_task(tofs,
 		    dmu_recv_resume_begin_check, dmu_recv_resume_begin_sync,
-		    &drba, 5, ZFS_SPACE_CHECK_NORMAL));
+		    &drba, 5, ZFS_SPACE_CHECK_NORMAL);
 	} else  {
-		int err;
-
 		/*
 		 * For non-raw, non-incremental, non-resuming receives the
 		 * user can specify encryption parameters on the command line
@@ -2213,9 +2232,20 @@ dmu_recv_begin(char *tofs, char *tosnap, dmu_replay_record_t *drr_begin,
 		    dmu_recv_begin_check, dmu_recv_begin_sync,
 		    &drba, 5, ZFS_SPACE_CHECK_NORMAL);
 		dsl_crypto_params_free(drba.drba_dcp, !!err);
-
-		return (err);
 	}
+
+	if (err == 0 && drc->drc_ds == NULL) {
+		/*
+		 * Make sure the dataset is destroyed before returning.  We
+		 * can't do this in the sync task because a dataset can't be
+		 * synced and destroyed in the same txg.  In this scenario,
+		 * it should be flagged as inconsistent so we're ok anyway.
+		 */
+		(void) dsl_destroy_head(tofs);
+		return (SET_ERROR(ENXIO));
+	}
+
+	return (err);
 }
 
 struct receive_record_arg {

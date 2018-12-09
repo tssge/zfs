@@ -99,9 +99,9 @@ spa_log_error(spa_t *spa, const zbookmark_phys_t *zb)
 
 	/*
 	 * If we are trying to import a pool, ignore any errors, as we won't be
-	 * writing to the pool any time soon.
+	 * writing to the pool any time soon.  Same for force exports.
 	 */
-	if (spa_load_state(spa) == SPA_LOAD_TRYIMPORT)
+	if (spa_exiting_any(spa) || spa_load_state(spa) == SPA_LOAD_TRYIMPORT)
 		return;
 
 	mutex_enter(&spa->spa_errlist_lock);

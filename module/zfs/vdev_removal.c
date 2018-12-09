@@ -1471,8 +1471,14 @@ spa_vdev_remove_thread(void *arg)
 			dmu_tx_t *tx =
 			    dmu_tx_create_dd(spa_get_dsl(spa)->dp_mos_dir);
 			dmu_tx_hold_space(tx, SPA_MAXBLOCKSIZE);
-			VERIFY0(dmu_tx_assign(tx, TXG_WAIT));
-			uint64_t txg = dmu_tx_get_txg(tx);
+			/*
+			 * If a tx can't be assigned, just punt and wait for
+			 * the next round.  This could be an exiting spa.
+			 */
+			if (dmu_tx_assign(tx, TXG_WAIT) != 0) {
+				dmu_tx_abort(tx);
+				goto done;
+			}
 
 			/*
 			 * Reacquire the vdev_config lock.  The vdev_t
@@ -1497,6 +1503,7 @@ spa_vdev_remove_thread(void *arg)
 
 	spa_config_exit(spa, SCL_CONFIG, FTAG);
 
+done:
 	/*
 	 * Wait for all copies to finish before cleaning up the vca.
 	 */
