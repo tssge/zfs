@@ -146,7 +146,7 @@ _refcount_add_many(refcount_t *rc, uint64_t number, void *holder,
 }
 
 int64_t
-zfs_refcount_add(refcount_t *rc, void *holder, const char *file, size_t line)
+_zfs_refcount_add(refcount_t *rc, void *holder, const char *file, size_t line)
 {
 	return (_refcount_add_many(rc, 1, holder, file, line));
 }

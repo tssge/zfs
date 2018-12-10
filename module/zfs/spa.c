@@ -5741,7 +5741,7 @@ spa_export_common(char *pool, int new_state, nvlist_t **oldconfig,
 		if (force_removal) {
 			txg_force_export(spa);
 		} else {
-			txg_wait_synced_flags(spa->spa_dsl_pool, 0);
+			txg_wait_synced(spa->spa_dsl_pool, 0);
 		}
 		spa_evicting_os_wait(spa);
 	}

@@ -635,7 +635,7 @@ spa_config_update_pool(spa_t *spa)
 {
 	vdev_t *rvd = spa->spa_root_vdev;
 	uint64_t txg;
-	int c;
+	int error;
 
 	error = spa_config_update_begin(spa, FTAG);
 	if (error != 0)
@@ -647,25 +647,6 @@ spa_config_update_pool(spa_t *spa)
 	error = spa_config_update_complete(spa, txg, B_FALSE, FTAG);
 	if (error == 0)
 		error = spa_config_update_vdevs(spa);
-	} else {
-	}
-	spa_config_exit(spa, SCL_ALL, FTAG);
-
-	/*
-	 * Wait for the mosconfig to be regenerated and synced.
-	 */
-	txg_wait_synced_flags(spa->spa_dsl_pool, txg, TXG_WAIT|TXG_NOSUSPEND);
-
-	/*
-	 * Update the global config cache to reflect the new mosconfig.
-	 */
-	if (!spa->spa_is_root) {
-		spa_write_cachefile(spa, B_FALSE,
-		    what != SPA_CONFIG_UPDATE_POOL);
-	}
-
-	if (what == SPA_CONFIG_UPDATE_POOL)
-		spa_config_update(spa, SPA_CONFIG_UPDATE_VDEVS);
 
 	return (error);
 }
@@ -675,7 +656,7 @@ EXPORT_SYMBOL(spa_config_load);
 EXPORT_SYMBOL(spa_all_configs);
 EXPORT_SYMBOL(spa_config_set);
 EXPORT_SYMBOL(spa_config_generate);
-EXPORT_SYMBOL(spa_config_update);
+EXPORT_SYMBOL(spa_config_update_pool);
 
 module_param(spa_config_path, charp, 0444);
 MODULE_PARM_DESC(spa_config_path, "SPA config file (/etc/zfs/zpool.cache)");

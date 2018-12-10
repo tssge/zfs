@@ -830,7 +830,6 @@ dsl_dataset_active_foreach(spa_t *spa, int func(dsl_dataset_t *, void *), void *
 	dnode_children_t *children_dnodes;
 	dnode_handle_t *dnh;
 	dsl_dataset_t *ds;
-	objset_t *os;
 	int ret = 0;
 
 	/*

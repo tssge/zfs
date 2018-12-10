@@ -28,6 +28,7 @@
 #include <sys/zfs_znode.h>
 #include <sys/zfs_ctldir.h>
 #include <sys/zpl.h>
+#include <sys/dmu_objset.h>
 
 
 static struct inode *
@@ -140,6 +141,20 @@ zpl_inode_delete(struct inode *ip)
 	clear_inode(ip);
 }
 #endif /* HAVE_EVICT_INODE */
+
+static void
+zpl_umount_begin(struct super_block *sb)
+{
+	zfsvfs_t *zfsvfs = sb->s_fs_info;
+
+	if (zfsvfs->z_os) {
+		/* Flush out all POSIX I/Os. */
+		zfsvfs->z_unmounted = B_TRUE;
+		(void) dmu_objset_shutdown_register(zfsvfs->z_os);
+		rrm_enter(&zfsvfs->z_teardown_lock, RW_WRITER, FTAG);
+		rrm_exit(&zfsvfs->z_teardown_lock, FTAG);
+	}
+}
 
 static void
 zpl_put_super(struct super_block *sb)
@@ -379,6 +394,7 @@ const struct super_operations zpl_super_operations = {
 	.delete_inode		= zpl_inode_delete,
 #endif /* HAVE_EVICT_INODE */
 	.put_super		= zpl_put_super,
+	.umount_begin		= zpl_umount_begin,
 	.sync_fs		= zpl_sync_fs,
 	.statfs			= zpl_statfs,
 	.remount_fs		= zpl_remount_fs,

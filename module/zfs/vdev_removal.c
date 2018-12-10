@@ -1479,6 +1479,7 @@ spa_vdev_remove_thread(void *arg)
 				dmu_tx_abort(tx);
 				goto done;
 			}
+			uint64_t txg = dmu_tx_get_txg(tx);
 
 			/*
 			 * Reacquire the vdev_config lock.  The vdev_t

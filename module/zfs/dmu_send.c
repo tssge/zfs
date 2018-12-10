@@ -1120,7 +1120,6 @@ dmu_send_init(struct send_thread_arg *to_arg, dsl_pool_t *dp,
 
 	dsp->dsa_outfd = outfd;
 	dsp->dsa_proc = curproc;
-	dsp->dsa_td = curthread;
 	dsp->dsa_fp = fp;
 	dsp->dsa_os = os;
 	dsp->dsa_off = fp->f_offset;
@@ -1141,7 +1140,7 @@ fail:
 
 static int
 send_register(dsl_pool_t *dp, dsl_dataset_t *ds, dmu_sendarg_t *dsp,
-    boolean_t owned, void *tag)
+    boolean_t owned, ds_hold_flags_t dsflags, void *tag)
 {
 	int err = 0;
 	spa_t *spa = dp->dp_spa;
@@ -1152,7 +1151,8 @@ send_register(dsl_pool_t *dp, dsl_dataset_t *ds, dmu_sendarg_t *dsp,
 	if (err == 0) {
 		/* Will be released in send_unregister */
 		if (owned) {
-			err = dsl_dataset_own_obj(dp, ds->ds_object, tag, &nds);
+			err = dsl_dataset_own_obj(dp, ds->ds_object, dsflags,
+			    tag, &nds);
 			if (err == 0)
 				ASSERT3P(nds, ==, ds);
 		} else
@@ -1170,11 +1170,11 @@ send_register(dsl_pool_t *dp, dsl_dataset_t *ds, dmu_sendarg_t *dsp,
 
 static void
 send_unregister(dsl_dataset_t *ds, dmu_sendarg_t *dsp,
-    boolean owned, void *tag)
+    boolean_t owned, ds_hold_flags_t dsflags, void *tag)
 {
 
 	if (owned) {
-		dsl_dataset_disown(ds, tag);
+		dsl_dataset_disown(ds, dsflags, tag);
 	} else {
 		dsl_dataset_long_rele(ds, tag);
 	}
@@ -1225,7 +1225,7 @@ dmu_send(dsl_pool_t **dpp, dsl_dataset_t *to_ds, dsl_dataset_t *fromds,
 			return (err);
 	}
 
-	err = dmu_send_init(&to_arg, dp, to_ds, fromds, outfd,
+	err = dmu_send_init(&to_arg, dp, to_ds, outfd,
 	    resumeobj, resumeoff,
 	    (fromds != NULL || fromzb != NULL) ? &zb : NULL, is_clone,
 	    embedok, large_block_ok, compressok, rawok, &payload, &dsp);
@@ -1233,7 +1233,7 @@ dmu_send(dsl_pool_t **dpp, dsl_dataset_t *to_ds, dsl_dataset_t *fromds,
 		return (err);
 
 	owned = (!to_ds->ds_is_snapshot && spa_writeable(dp->dp_spa));
-	err = send_register(dp, to_ds, dsp, owned, tag);
+	err = send_register(dp, to_ds, dsp, owned, dsflags, tag);
 	if (err != 0)
 		goto regfail;
 
@@ -1307,7 +1307,7 @@ dmu_send(dsl_pool_t **dpp, dsl_dataset_t *to_ds, dsl_dataset_t *fromds,
 		err = dsp->dsa_err;
 
 out:
-	send_unregister(to_ds, dsp, owned, tag);
+	send_unregister(to_ds, dsp, owned, dsflags, tag);
 
 regfail:
 	vp = dsp->dsa_fp->f_vnode;
@@ -1917,7 +1917,7 @@ dmu_recv_begin_sync(void *arg, dmu_tx_t *tx)
 
 	error = recv_own(dp, dsobj, dsflags, drba->drba_cookie, &newds, &os);
 	dsl_dataset_phys(newds_ref)->ds_flags |= DS_FLAG_INCONSISTENT;
-	dsl-dataset_rele(newds_ref, FTAG);
+	dsl_dataset_rele(newds_ref, FTAG);
 	if (error != 0)
 		return;
 

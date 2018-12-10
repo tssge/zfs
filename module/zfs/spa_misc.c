@@ -506,7 +506,7 @@ _spa_config_enter_flags(spa_t *spa, int locks, void *tag, krw_t rw,
 				scl->scl_writer = curthread;
 		}
 		if (error == 0)
-			(void) _refcount_add(&scl->scl_count, tag, file, line);
+			(void) _zfs_refcount_add(&scl->scl_count, tag, file, line);
 		mutex_exit(&scl->scl_lock);
 
 		if (error != 0 && i > 0) {
@@ -860,7 +860,7 @@ _spa_open_ref(spa_t *spa, void *tag, const char *file, size_t line)
 {
 	ASSERT(refcount_count(&spa->spa_refcount) >= spa->spa_minref ||
 	    MUTEX_HELD(&spa_namespace_lock));
-	(void) _refcount_add(&spa->spa_refcount, tag, file, line);
+	(void) _zfs_refcount_add(&spa->spa_refcount, tag, file, line);
 }
 
 /*
@@ -2646,13 +2646,13 @@ EXPORT_SYMBOL(spa_remove);
 EXPORT_SYMBOL(spa_next);
 
 /* Refcount functions */
-EXPORT_SYMBOL(spa_open_ref);
+EXPORT_SYMBOL(_spa_open_ref);
 EXPORT_SYMBOL(spa_close);
 EXPORT_SYMBOL(spa_refcount_zero);
 
 /* Pool configuration lock */
-EXPORT_SYMBOL(spa_config_tryenter);
-EXPORT_SYMBOL(spa_config_enter);
+EXPORT_SYMBOL(_spa_config_tryenter);
+EXPORT_SYMBOL(_spa_config_enter);
 EXPORT_SYMBOL(spa_config_exit);
 EXPORT_SYMBOL(spa_config_held);
 
@@ -2661,7 +2661,7 @@ EXPORT_SYMBOL(spa_vdev_enter);
 EXPORT_SYMBOL(spa_vdev_exit);
 
 /* Pool vdev state change lock */
-EXPORT_SYMBOL(spa_vdev_state_enter);
+EXPORT_SYMBOL(_spa_vdev_state_enter);
 EXPORT_SYMBOL(spa_vdev_state_exit);
 
 /* Accessor functions */

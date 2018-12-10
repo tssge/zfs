@@ -112,6 +112,7 @@ typedef struct refcount {
 #define	refcount_is_zero(rc) ((rc)->rc_count == 0)
 #define	refcount_count(rc) ((rc)->rc_count)
 #define	zfs_refcount_add(rc, holder) atomic_inc_64_nv(&(rc)->rc_count)
+#define	_zfs_refcount_add(rc, holder, file, line) zfs_refcount_add(rc, holder)
 #define	refcount_remove(rc, holder) atomic_dec_64_nv(&(rc)->rc_count)
 #define	refcount_add_many(rc, number, holder) \
 	atomic_add_64_nv(&(rc)->rc_count, number)

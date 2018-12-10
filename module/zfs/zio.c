@@ -2267,8 +2267,7 @@ zio_unsuspend(spa_t *spa)
 void
 zio_cancel(spa_t *spa)
 {
-	zio_link_t *zl = NULL;
-	zio_t *pio, *cio, *cio_next;
+	zio_t *pio;
 
 	/*
 	 * Interrupt all physical zios.
@@ -2281,20 +2280,6 @@ zio_cancel(spa_t *spa)
 	mutex_exit(&spa->spa_suspend_lock);
 	if (pio == NULL)
 		return;
-
-#if 0
-	mutex_enter(&pio->io_lock);
-	for (cio = zio_walk_children(pio, &zl); cio != NULL; cio = cio_next) {
-		cio_next = zio_walk_children(pio, &zl);
-		mutex_enter(&cio->io_lock);
-		if (cio->io_error == 0)
-			cio->io_error = SET_ERROR(EINTR);
-		cio->io_orig_pipeline = ZIO_INTERLOCK_PIPELINE;
-		cio->io_pipeline = ZIO_INTERLOCK_PIPELINE;
-		mutex_exit(&cio->io_lock);
-	}
-	mutex_exit(&pio->io_lock);
-#endif
 
 	zio_reexecute(pio);
 	zio_nowait(pio);
@@ -4415,7 +4400,7 @@ zio_done(zio_t *zio)
 	 * If the pool is forcibly exporting, make sure everything is
 	 * thrown away, as nothing can be trusted now.
 	 */
-	if (spa_exiting_any(spa) && zio->io_error == 0)
+	if (spa_exiting_any(zio->io_spa) && zio->io_error == 0)
 		zio->io_error = SET_ERROR(EIO);
 
 	/*
@@ -4520,7 +4505,7 @@ zio_done(zio_t *zio)
 			    zio->io_vd, &zio->io_bookmark, zio, 0, 0);
 	}
 
-	if (zio->io_error && !spa_exiting_any(spa)) {
+	if (zio->io_error && !spa_exiting_any(zio->io_spa)) {
 		/*
 		 * If this I/O is attached to a particular vdev,
 		 * generate an error message describing the I/O failure
