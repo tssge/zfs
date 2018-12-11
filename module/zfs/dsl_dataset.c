@@ -855,7 +855,7 @@ dsl_dataset_active_foreach(spa_t *spa, int func(dsl_dataset_t *, void *), void *
 
 		for (i = 0; ret == 0 && i < DNODES_PER_BLOCK; i++) {
 			dnh = &children_dnodes->dnc_children[i];
-			if (dnh->dnh_dnode == NULL)
+			if (!DN_SLOT_IS_PTR(dnh->dnh_dnode))
 				continue;
 
 			if (dnh->dnh_dnode->dn_type != DMU_OT_OBJSET)

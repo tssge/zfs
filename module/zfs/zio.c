@@ -2282,7 +2282,7 @@ zio_cancel(spa_t *spa)
 		return;
 
 	zio_reexecute(pio);
-	zio_nowait(pio);
+	(void) zio_wait(pio);
 }
 
 int

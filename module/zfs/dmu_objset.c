@@ -1867,6 +1867,7 @@ do_userquota_cacheflush(objset_t *os, userquota_cache_t *cache, dmu_tx_t *tx)
 {
 	void *cookie;
 	userquota_node_t *uqn;
+	int error;
 
 	ASSERT(dmu_tx_is_syncing(tx));
 
@@ -1880,8 +1881,9 @@ do_userquota_cacheflush(objset_t *os, userquota_cache_t *cache, dmu_tx_t *tx)
 		 */
 		if (!dmu_objset_exiting(os)) {
 			mutex_enter(&os->os_userused_lock);
-			VERIFY0(zap_increment(os, DMU_USERUSED_OBJECT,
-			    uqn->uqn_id, uqn->uqn_delta, tx));
+			error = zap_increment(os, DMU_USERUSED_OBJECT,
+			    uqn->uqn_id, uqn->uqn_delta, tx);
+			VERIFY(error == 0 || dmu_objset_exiting(os));
 			mutex_exit(&os->os_userused_lock);
 		}
 		kmem_free(uqn, sizeof (*uqn));
@@ -1893,8 +1895,9 @@ do_userquota_cacheflush(objset_t *os, userquota_cache_t *cache, dmu_tx_t *tx)
 	    &cookie)) != NULL) {
 		if (!dmu_objset_exiting(os)) {
 			mutex_enter(&os->os_userused_lock);
-			VERIFY0(zap_increment(os, DMU_GROUPUSED_OBJECT,
-			    uqn->uqn_id, uqn->uqn_delta, tx));
+			error = zap_increment(os, DMU_GROUPUSED_OBJECT,
+			    uqn->uqn_id, uqn->uqn_delta, tx);
+			VERIFY(error == 0 || dmu_objset_exiting(os));
 			mutex_exit(&os->os_userused_lock);
 		}
 		kmem_free(uqn, sizeof (*uqn));
@@ -1906,8 +1909,9 @@ do_userquota_cacheflush(objset_t *os, userquota_cache_t *cache, dmu_tx_t *tx)
 		while ((uqn = avl_destroy_nodes(&cache->uqc_project_deltas,
 		    &cookie)) != NULL) {
 			mutex_enter(&os->os_userused_lock);
-			VERIFY0(zap_increment(os, DMU_PROJECTUSED_OBJECT,
-			    uqn->uqn_id, uqn->uqn_delta, tx));
+			error = zap_increment(os, DMU_PROJECTUSED_OBJECT,
+			    uqn->uqn_id, uqn->uqn_delta, tx);
+			VERIFY(error == 0 || dmu_objset_exiting(os));
 			mutex_exit(&os->os_userused_lock);
 			kmem_free(uqn, sizeof (*uqn));
 		}
