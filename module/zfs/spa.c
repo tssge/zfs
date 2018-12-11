@@ -1490,10 +1490,10 @@ spa_unload(spa_t *spa)
 	 * calling taskq_wait(mg_taskq).
 	 */
 	if (spa->spa_root_vdev != NULL) {
-		spa_config_enter(spa, SCL_ALL, FTAG, RW_WRITER);
+		spa_config_enter(spa, SCL_ALL, spa, RW_WRITER);
 		for (int c = 0; c < spa->spa_root_vdev->vdev_children; c++)
 			vdev_metaslab_fini(spa->spa_root_vdev->vdev_child[c]);
-		spa_config_exit(spa, SCL_ALL, FTAG);
+		spa_config_exit(spa, SCL_ALL, spa);
 	}
 
 	if (spa->spa_mmp.mmp_thread)
