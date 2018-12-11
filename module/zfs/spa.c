@@ -5755,6 +5755,7 @@ spa_export_common(char *pool, int new_state, nvlist_t **oldconfig,
 		mutex_exit(&spa_namespace_lock);
 		mutex_enter(&spa->spa_evicting_os_lock);
 		while (spa->spa_killer == curthread) {
+			zio_cancel(spa);
 			cv_wait(&spa->spa_evicting_os_cv,
 			    &spa->spa_evicting_os_lock);
 		}

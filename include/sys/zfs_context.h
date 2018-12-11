@@ -376,7 +376,7 @@ extern void kstat_set_raw_ops(kstat_t *ksp,
 #define	kmem_cache_reap_now(_c)	umem_cache_reap_now(_c);
 #define	kmem_cache_set_move(_c, _cb)	/* nothing */
 #define	vmem_qcache_reap(_v)		/* nothing */
-#define	POINTER_INVALIDATE(_pp)		/* nothing */
+#define	POINTER_INVALIDATE(pp)		(*(pp) = (void *)((uintptr_t)(*(pp)) | 0x1))
 #define	POINTER_IS_VALID(_p)	0
 
 extern vmem_t *zio_arena;
