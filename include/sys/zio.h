@@ -624,7 +624,6 @@ extern enum zio_compress zio_compress_select(spa_t *spa,
 
 extern void zio_suspend(spa_t *spa, zio_t *zio, zio_suspend_reason_t);
 extern int zio_resume(spa_t *spa);
-extern void zio_resume_wait(spa_t *spa);
 extern void zio_cancel(spa_t *spa);
 
 /*

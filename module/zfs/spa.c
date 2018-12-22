@@ -8091,7 +8091,6 @@ spa_sync(spa_t *spa, uint64_t txg)
 		if (error == 0)
 			break;
 		zio_suspend(spa, NULL, ZIO_SUSPEND_IOERR);
-		zio_resume_wait(spa);
 
 		mutex_enter(&spa->spa_suspend_lock);
 		for (;;) {

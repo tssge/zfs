@@ -2309,15 +2309,6 @@ zio_resume(spa_t *spa)
 	return (zio_wait(pio));
 }
 
-void
-zio_resume_wait(spa_t *spa)
-{
-	mutex_enter(&spa->spa_suspend_lock);
-	while (spa_suspended(spa))
-		cv_wait(&spa->spa_suspend_cv, &spa->spa_suspend_lock);
-	mutex_exit(&spa->spa_suspend_lock);
-}
-
 /*
  * ==========================================================================
  * Gang blocks.
