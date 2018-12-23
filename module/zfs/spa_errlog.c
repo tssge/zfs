@@ -321,6 +321,7 @@ sync_error_list(spa_t *spa, avl_tree_t *t, uint64_t *obj, dmu_tx_t *tx)
 			    *obj, buf, 1, strlen(name) + 1, name, tx);
 		}
 
+done:
 		/* purge the error list */
 		cookie = NULL;
 		while ((se = avl_destroy_nodes(t, &cookie)) != NULL)
