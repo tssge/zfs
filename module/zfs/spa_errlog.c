@@ -305,6 +305,9 @@ sync_error_list(spa_t *spa, avl_tree_t *t, uint64_t *obj, dmu_tx_t *tx)
 	void *cookie;
 
 	if (avl_numnodes(t) != 0) {
+		if (spa_exiting(spa))
+			goto done;
+
 		/* create log if necessary */
 		if (*obj == 0)
 			*obj = zap_create(spa->spa_meta_objset,
