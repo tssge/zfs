@@ -5701,7 +5701,7 @@ spa_export_common(char *pool, int new_state, nvlist_t **oldconfig,
 	 * Mark the pool as facing impending exit if this is a forced
 	 * destroy or export.
 	 */
-	force_removal = (force || hardforce) && modifying;
+	force_removal = hardforce && modifying;
 	if (force_removal) {
 		/* Ensure that references see this change after this. */
 		spa_set_killer(spa, curthread);
@@ -5772,7 +5772,6 @@ spa_export_common(char *pool, int new_state, nvlist_t **oldconfig,
 	 */
 	if (!spa_refcount_zero(spa) || (spa->spa_inject_ref != 0)) {
 		VERIFY(!force_removal);
-		spa_set_killer(spa, NULL);
 		spa_async_resume(spa);
 		mutex_exit(&spa_namespace_lock);
 		return (SET_ERROR(EBUSY));
@@ -5826,11 +5825,6 @@ export_spa:
 		VERIFY(nvlist_dup(spa->spa_config, oldconfig, 0) == 0);
 
 	if (new_state != POOL_STATE_UNINITIALIZED) {
-		/*
-		 * XXX Re-add distinction between force & hardforce, switch
-		 *     to using zpool export -F.  However, will need to
-		 *     figure out way to make force unmount differentiate...
-		 */
 		if (!force_removal)
 			spa_write_cachefile(spa, B_TRUE, B_TRUE);
 		spa_remove(spa);
