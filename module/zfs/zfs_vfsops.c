@@ -1900,6 +1900,7 @@ zfs_preumount(struct super_block *sb)
 	/* zfsvfs is NULL when zfs_domount fails during mount */
 	if (zfsvfs) {
 		zfsctl_destroy(sb->s_fs_info);
+		generic_shutdown_super(sb);
 		/*
 		 * Wait for iput_async before entering evict_inodes in
 		 * generic_shutdown_super. The reason we must finish before
