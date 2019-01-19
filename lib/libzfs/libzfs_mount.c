@@ -1337,6 +1337,7 @@ zpool_disable_datasets(zpool_handle_t *zhp, boolean_t force)
 	int ret = -1;
 	int flags = (force ? MS_FORCE : 0);
 
+	hdl->libzfs_force_export = force;
 	namelen = strlen(zhp->zpool_name);
 
 	/* Reopen MNTTAB to prevent reading stale data from open file */
