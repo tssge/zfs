@@ -1668,7 +1668,13 @@ zfsvfs_teardown(zfsvfs_t *zfsvfs, boolean_t unmounting)
 				break;
 		}
 		killer = zfsvfs->z_os->os_killer;
-		if (killer == curthread)
+		/*
+		 * Although it could be argued that a force unmount in
+		 * another thread shouldn't have this apply, once a force
+		 * unmount is in effect, it's pointless for the non-forced
+		 * unmount to not use this flag.
+		 */
+		if (killer != NULL)
 			wait_flags |= TXG_WAIT_F_NOSUSPEND;
 	}
 
