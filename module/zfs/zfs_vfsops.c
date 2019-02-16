@@ -1639,6 +1639,7 @@ zfsvfs_teardown(zfsvfs_t *zfsvfs, boolean_t unmounting)
 {
 	znode_t	*zp;
 	kthread_t *killer = NULL;
+	uint64_t wait_flags = 0;
 
 	/*
 	 * If someone has not already unmounted this file system,
@@ -1667,6 +1668,8 @@ zfsvfs_teardown(zfsvfs_t *zfsvfs, boolean_t unmounting)
 				break;
 		}
 		killer = zfsvfs->z_os->os_killer;
+		if (killer == curthread)
+			wait_flags |= TXG_WAIT_F_NOSUSPEND;
 	}
 
 	rrm_enter(&zfsvfs->z_teardown_lock, RW_WRITER, FTAG);
@@ -1754,8 +1757,9 @@ zfsvfs_teardown(zfsvfs_t *zfsvfs, boolean_t unmounting)
 	 * Evict cached data. We must write out any dirty data before
 	 * disowning the dataset.
 	 */
-	if (!spa_suspended(zfsvfs->z_os->os_spa) && !zfs_is_readonly(zfsvfs))
-		txg_wait_synced(dmu_objset_pool(zfsvfs->z_os), 0);
+	if (!zfs_is_readonly(zfsvfs))
+		(void) txg_wait_synced_tx(dmu_objset_pool(zfsvfs->z_os), 0,
+		    NULL, wait_flags);
 	dmu_objset_evict_dbufs(zfsvfs->z_os);
 
 	if (killer == curthread)

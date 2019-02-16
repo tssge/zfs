@@ -884,6 +884,9 @@ dmu_tx_try_assign(dmu_tx_t *tx, uint64_t txg_how)
 	if (spa_suspended(spa)) {
 		DMU_TX_STAT_BUMP(dmu_tx_suspended);
 
+		if (txg_how & TXG_NOSUSPEND)
+			return (SET_ERROR(EAGAIN));
+
 		/*
 		 * If the user is forcibly exporting the pool or the objset,
 		 * indicate to the caller that they need to give up.
@@ -1001,6 +1004,8 @@ dmu_tx_unassign(dmu_tx_t *tx)
 	tx->tx_txg = 0;
 }
 
+static void dmu_tx_wait_flags(dmu_tx_t *, uint64_t);
+
 /*
  * Assign tx to a transaction group; txg_how is a bitmask:
  *
@@ -1032,7 +1037,7 @@ dmu_tx_assign(dmu_tx_t *tx, uint64_t txg_how)
 	int err;
 
 	ASSERT(tx->tx_txg == 0);
-	ASSERT0(txg_how & ~(TXG_WAIT | TXG_NOTHROTTLE));
+	ASSERT0(txg_how & ~(TXG_NOSUSPEND | TXG_WAIT | TXG_NOTHROTTLE));
 	ASSERT(!dsl_pool_sync_context(tx->tx_pool));
 
 	/* If we might wait, we must not hold the config lock. */
@@ -1047,7 +1052,7 @@ dmu_tx_assign(dmu_tx_t *tx, uint64_t txg_how)
 		if (err != ERESTART || !(txg_how & TXG_WAIT))
 			return (err);
 
-		dmu_tx_wait(tx);
+		dmu_tx_wait_flags(tx, txg_how);
 	}
 
 	txg_rele_to_quiesce(&tx->tx_txgh);
@@ -1055,8 +1060,8 @@ dmu_tx_assign(dmu_tx_t *tx, uint64_t txg_how)
 	return (0);
 }
 
-void
-dmu_tx_wait(dmu_tx_t *tx)
+static void
+dmu_tx_wait_flags(dmu_tx_t *tx, uint64_t how)
 {
 	spa_t *spa = tx->tx_pool->dp_spa;
 	dsl_pool_t *dp = tx->tx_pool;
@@ -1105,7 +1110,7 @@ dmu_tx_wait(dmu_tx_t *tx)
 		 * It's also possible the pool will be force exported, in
 		 * which case we'll try again and notice this fact, and exit.
 		 */
-		txg_wait_synced_tx(dp, spa_last_synced_txg(spa) + 1, tx);
+		txg_wait_synced_tx(dp, spa_last_synced_txg(spa) + 1, tx, how);
 	} else if (tx->tx_needassign_txh) {
 		dnode_t *dn = tx->tx_needassign_txh->txh_dnode;
 
@@ -1123,10 +1128,17 @@ dmu_tx_wait(dmu_tx_t *tx)
 		 * It's also possible the pool will be force exported, in
 		 * which case we'll try again and notice this fact, and exit.
 		 */
-		txg_wait_synced_tx(dp, spa_last_synced_txg(spa) + 1, tx);
+		txg_wait_synced_tx(dp, spa_last_synced_txg(spa) + 1, tx, how);
 	}
 
 	spa_tx_assign_add_nsecs(spa, gethrtime() - before);
+}
+
+void
+dmu_tx_wait(dmu_tx_t *tx)
+{
+
+	return dmu_tx_wait_flags(tx, 0);
 }
 
 static void

@@ -690,7 +690,8 @@ txg_delay(dsl_pool_t *dp, uint64_t txg, hrtime_t delay, hrtime_t resolution)
 }
 
 int
-txg_wait_synced_tx(dsl_pool_t *dp, uint64_t txg, dmu_tx_t *tx)
+txg_wait_synced_tx(dsl_pool_t *dp, uint64_t txg, dmu_tx_t *tx,
+    unsigned int flags)
 {
 	tx_state_t *dp_tx = &dp->dp_tx;
 	int error = 0;
@@ -718,8 +719,12 @@ txg_wait_synced_tx(dsl_pool_t *dp, uint64_t txg, dmu_tx_t *tx)
 		 * If we are suspended and exiting, give up, because our
 		 * data isn't going to be pushed.
 		 */
-		if (spa_suspended(spa) && spa_exiting_any(spa))
-			error = SET_ERROR(EAGAIN);
+		if (spa_suspended(spa)) {
+			if ((flags & TXG_WAIT_F_NOSUSPEND) ||
+			    spa_exiting_any(spa)) {
+				error = SET_ERROR(EAGAIN);
+			}
+		}
 		if (error == 0 && os != NULL && dmu_objset_exiting(os))
 			error = SET_ERROR(EAGAIN);
 		if (error == 0)
@@ -732,7 +737,7 @@ txg_wait_synced_tx(dsl_pool_t *dp, uint64_t txg, dmu_tx_t *tx)
 int
 txg_wait_synced(dsl_pool_t *dp, uint64_t txg)
 {
-	return txg_wait_synced_tx(dp, txg, NULL);
+	return txg_wait_synced_tx(dp, txg, NULL, 0);
 }
 
 void

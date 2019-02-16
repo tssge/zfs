@@ -85,9 +85,16 @@ extern void txg_kick(struct dsl_pool *dp);
  * Try to make this happen as soon as possible (eg. kick off any
  * necessary syncs immediately).  If txg==0, wait for the currently open
  * txg to finish syncing.  This may be interrupted due to an exiting pool.
+ *
+ * If desired, flags can be specified using txg_wait_synced_tx(), in case
+ * the caller wants to be interruptible.
  */
 extern int txg_wait_synced(struct dsl_pool *dp, uint64_t txg);
-extern int txg_wait_synced_tx(struct dsl_pool *dp, uint64_t txg, struct dmu_tx *tx);
+extern int txg_wait_synced_tx(struct dsl_pool *dp, uint64_t txg,
+    struct dmu_tx *tx, unsigned int flags);
+
+/* If specified to txg_wait_synced_tx(), reject the call upon suspension. */
+#define	TXG_WAIT_F_NOSUSPEND	(1U << 0)
 
 /*
  * Wait until the given transaction group, or one after it, is
