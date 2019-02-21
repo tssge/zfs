@@ -524,9 +524,10 @@ log_internal(nvlist_t *nvl, const char *operation, spa_t *spa,
 	/*
 	 * If this is part of creating a pool, not everything is
 	 * initialized yet, so don't bother logging the internal events.
-	 * Likewise if the pool is not writeable.
+	 * Likewise if the pool is not writeable, or is being force exported.
 	 */
-	if (spa_is_initializing(spa) || !spa_writeable(spa)) {
+	if (spa_is_initializing(spa) || !spa_writeable(spa) ||
+	    spa_exiting_any(spa)) {
 		fnvlist_free(nvl);
 		return;
 	}
