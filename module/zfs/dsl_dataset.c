@@ -750,64 +750,28 @@ dsl_dataset_long_held(dsl_dataset_t *ds)
  * Cancellation interfaces for send/receive streams.
  *
  * If a send/recv wins the race with a forced destroy, their pipes will be
- * revoked, and the destroy will wait for all ioctl references to drop.
+ * interrutped, and the destroy will wait for all ioctl references to drop.
  *
  * If a forced destroy wins the race, the send/receive will fail to start.
  */
-
-#ifdef _KERNEL
-/* Cancel any outstanding send streams for the dataset. */
-static int
-dsl_dataset_sendstreams_cancel(dsl_dataset_t *ds)
-{
-	dmu_sendarg_t *dsa;
-	int err = 0;
-
-	mutex_enter(&ds->ds_sendstream_lock);
-	dsa = list_head(&ds->ds_sendstreams);
-	while (err == 0 && dsa != NULL) {
-		if (dsa->dsa_fp != NULL)
-			err = fo_close(dsa->dsa_fp, curthread);
-		dsa = list_next(&ds->ds_sendstreams, dsa);
-	}
-	mutex_exit(&ds->ds_sendstream_lock);
-
-	return (err);
-}
-
-/*
- * Cancel the receive stream for the dataset, if there is one.
- */
-static int
-dsl_dataset_recvstream_cancel(dsl_dataset_t *ds)
-{
-	dmu_recv_cookie_t *drc;
-	int err = 0;
-
-	drc = ds->ds_receiver;
-	if (drc != NULL && drc->drc_fp != NULL) {
-		err = fo_close(drc->drc_fp, curthread);
-	}
-
-	return (err);
-}
-#endif
 
 /* dsl_dataset_sendrecv_cancel_all callback for dsl_dataset_active_foreach. */
 static int
 dsl_dataset_sendrecv_cancel_cb(dsl_dataset_t *ds, void *arg)
 {
 	int err = 0;
-#ifdef _KERNEL
+	dmu_sendarg_t *dsa;
 
-	err = dsl_dataset_sendstreams_cancel(ds);
+	mutex_enter(&ds->ds_sendstream_lock);
+	dsa = list_head(&ds->ds_sendstreams);
+	while (err == 0 && dsa != NULL) {
+		err = dmu_send_close(ds, dsa);
+		dsa = list_next(&ds->ds_sendstreams, dsa);
+	}
+	mutex_exit(&ds->ds_sendstream_lock);
 	if (err == 0)
-		err = dsl_dataset_recvstream_cancel(ds);
+		err = dmu_recv_close(ds);
 
-#else
-	fprintf(stderr, "%s: returning EOPNOTSUPP\n", __func__);
-	err = EOPNOTSUPP;
-#endif
 	return (err);
 }
 

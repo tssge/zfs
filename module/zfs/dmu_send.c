@@ -68,6 +68,9 @@ int zfs_send_set_freerecords_bit = B_TRUE;
 
 const char *recv_clone_name = "%recv";
 
+/* The receive was closed by an external call. */
+#define	DRC_CLOSED	(1U << 0)
+
 /*
  * Use this to override the recordsize calculation for fast zfs send estimates.
  */
@@ -709,7 +712,9 @@ send_cb(spa_t *spa, zilog_t *zilog, const blkptr_t *bp,
 	record->indblkshift = dnp->dn_indblkshift;
 	record->datablkszsec = dnp->dn_datablkszsec;
 	record_size = dnp->dn_datablkszsec << SPA_MINBLOCKSHIFT;
-	bqueue_enqueue(&sta->q, record, record_size);
+	err = bqueue_enqueue(&sta->q, record, record_size);
+	if (err != 0)
+		kmem_free(record, sizeof (struct send_block_record));
 
 	return (err);
 }
@@ -738,7 +743,9 @@ send_traverse_thread(void *arg)
 	}
 	data = kmem_zalloc(sizeof (*data), KM_SLEEP);
 	data->eos_marker = B_TRUE;
-	bqueue_enqueue(&st_arg->q, data, 1);
+	err = bqueue_enqueue(&st_arg->q, data, 1);
+	if (err != 0 && st_arg->error_code == 0)
+		st_arg->error_code = err;
 	spl_fstrans_unmark(cookie);
 	thread_exit();
 }
@@ -1118,6 +1125,7 @@ dmu_send_init(struct send_thread_arg *to_arg, dsl_pool_t *dp,
 		fnvlist_free(nvl);
 	}
 
+	dsp->dsa_st_arg = to_arg;
 	dsp->dsa_outfd = outfd;
 	dsp->dsa_proc = curproc;
 	dsp->dsa_fp = fp;
@@ -1180,6 +1188,7 @@ send_unregister(dsl_dataset_t *ds, dmu_sendarg_t *dsp,
 	}
 
 	mutex_enter(&ds->ds_sendstream_lock);
+	dsp->dsa_st_arg = NULL;
 	list_remove(&ds->ds_sendstreams, dsp);
 	mutex_exit(&ds->ds_sendstream_lock);
 }
@@ -1263,7 +1272,7 @@ dmu_send(dsl_pool_t **dpp, dsl_dataset_t *to_ds, dsl_dataset_t *fromds,
 
 	to_data = bqueue_dequeue(&to_arg.q);
 
-	while (!to_data->eos_marker && err == 0) {
+	while (to_data != NULL && !to_data->eos_marker && err == 0) {
 		err = do_dump(dsp, to_data);
 		if (err == 0) {
 			to_data = get_next_record(&to_arg.q, to_data);
@@ -1274,11 +1283,11 @@ dmu_send(dsl_pool_t **dpp, dsl_dataset_t *to_ds, dsl_dataset_t *fromds,
 
 	if (err != 0) {
 		to_arg.cancel = B_TRUE;
-		while (!to_data->eos_marker) {
+		while (to_data != NULL && !to_data->eos_marker)
 			to_data = get_next_record(&to_arg.q, to_data);
-		}
 	}
-	kmem_free(to_data, sizeof (*to_data));
+	if (to_data != NULL)
+		kmem_free(to_data, sizeof (*to_data));
 
 	bqueue_destroy(&to_arg.q);
 
@@ -2178,6 +2187,7 @@ dmu_recv_begin(char *tofs, char *tosnap, dmu_replay_record_t *drr_begin,
 
 	bzero(drc, sizeof (dmu_recv_cookie_t));
 	drc->drc_fp = fp;
+	drc->drc_initiator = curthread;
 	drc->drc_drr_begin = drr_begin;
 	drc->drc_drrb = &drr_begin->drr_u.drr_begin;
 	drc->drc_tosnap = tosnap;
@@ -3183,6 +3193,8 @@ static void
 dmu_recv_cleanup_ds(dmu_recv_cookie_t *drc)
 {
 	dsl_dataset_t *ds = drc->drc_ds;
+	int error = 0;
+	objset_t *os = ds->ds_objset;
 
 	/*
 	 * Wait for the txg sync before cleaning up the receive. For
@@ -3190,9 +3202,17 @@ dmu_recv_cleanup_ds(dmu_recv_cookie_t *drc)
 	 * been written out to disk. For raw receives, this ensures
 	 * that the user accounting code will not attempt to do anything
 	 * after we stopped receiving the dataset.
+	 *
+	 * If this is interrupted due to suspension and the pool is being
+	 * force exported, just exit and cleanup.
 	 */
-	txg_wait_synced(ds->ds_dir->dd_pool, 0);
-	ds->ds_objset->os_raw_receive = B_FALSE;
+	for (;;) {
+		error = txg_wait_synced_tx(ds->ds_dir->dd_pool, 0,
+		    NULL, TXG_WAIT_F_NOSUSPEND);
+		if (error == 0 || spa_exiting_any(os->os_spa))
+			break;
+	}
+	os->os_raw_receive = B_FALSE;
 
 	rrw_enter(&ds->ds_bp_rwlock, RW_READER, FTAG);
 	if (drc->drc_resumable && !BP_IS_HOLE(dsl_dataset_get_blkptr(ds))) {
@@ -3732,7 +3752,7 @@ receive_writer_thread(void *arg)
 	struct receive_record_arg *rrd;
 	fstrans_cookie_t cookie = spl_fstrans_mark();
 
-	for (rrd = bqueue_dequeue(&rwa->q); !rrd->eos_marker;
+	for (rrd = bqueue_dequeue(&rwa->q); rrd != NULL && !rrd->eos_marker;
 	    rrd = bqueue_dequeue(&rwa->q)) {
 		/*
 		 * If there's an error, the main thread will stop putting things
@@ -3751,7 +3771,6 @@ receive_writer_thread(void *arg)
 		}
 		kmem_free(rrd, sizeof (*rrd));
 	}
-	kmem_free(rrd, sizeof (*rrd));
 	mutex_enter(&rwa->mutex);
 	rwa->done = B_TRUE;
 	cv_signal(&rwa->cv);
@@ -3786,6 +3805,100 @@ resume_check(struct receive_arg *ra, nvlist_t *begin_nvl)
 	return (0);
 }
 
+static int
+dmu_recv_close_impl(dmu_recv_cookie_t *drc)
+{
+	struct receive_writer_arg *rwa;
+	int err = 0;
+
+	drc->drc_flags |= DRC_CLOSED;
+	rwa = drc->drc_rwa;
+	if (rwa != NULL)
+		bqueue_close(&rwa->q);
+	/*
+	 * Send a signal to the calling thread, in case it's waiting
+	 * on the worker, or on a pipe read.  The actions above will
+	 * cause it to push through an error exit.
+	 */
+	if (drc->drc_initiator != curthread)
+		thread_signal(drc->drc_initiator, SIGINT);
+	return (err);
+}
+
+/*
+ * Cancel the receive stream for the dataset, if there is one.
+ */
+int
+dmu_recv_close(dsl_dataset_t *ds)
+{
+	int err = 0;
+
+	/*
+	 * This lock isn't technically for recv, but it's not worth
+	 * adding a dedicated one for this purpose.
+	 */
+	mutex_enter(&ds->ds_sendstream_lock);
+	if (ds->ds_receiver != NULL)
+		err = dmu_recv_close_impl(ds->ds_receiver);
+	mutex_exit(&ds->ds_sendstream_lock);
+
+	return (err);
+}
+
+/*
+ * Cancel a given sendstream.
+ */
+int
+dmu_send_close(dsl_dataset_t *ds, void *dsap)
+{
+	dmu_sendarg_t *dsa = dsap;
+	struct send_thread_arg *st_arg;
+	int err = 0;
+
+	ASSERT(MUTEX_HELD(&ds->ds_sendstream_lock));
+
+	/*
+	 * It is sufficient to close the bqueue, because the calling thread
+	 * continuously pulls from it, and once the bqueue is closed, it
+	 * will recognize an error and force its worker to close.
+	 */
+	st_arg = dsa->dsa_st_arg;
+	if (st_arg != NULL)
+		bqueue_close(&st_arg->q);
+
+	return (err);
+}
+
+static void
+recv_check(dmu_recv_cookie_t *drc, struct receive_writer_arg *rwa,
+    kthread_t *worker_td)
+{
+	int error;
+
+	/*
+	 * If the receive has been closed, ensure the worker thread receives
+	 * notice of this by sending a signal to it, which will interrupt
+	 * any i/o that may be blocked on the pipe.  The bqueue is already
+	 * closed, but it is necessary to ensure any i/o is interrupted too.
+	 */
+	if (drc->drc_flags & DRC_CLOSED) {
+do_signal:
+		ASSERT(bqueue_is_closed(&rwa->q));
+		thread_signal(worker_td, SIGINT);
+		return;
+	}
+
+	/*
+	 * In case this thread was signalled by something else, just do a
+	 * quick check now and trigger error exit if so.
+	 */
+	error = spa_operation_interrupted(dsl_dataset_get_spa(drc->drc_ds));
+	if (error != 0) {
+		dmu_recv_close_impl(drc);
+		goto do_signal;
+	}
+}
+
 /*
  * Read in the stream's records, one by one, and apply them to the pool.  There
  * are two threads involved; the thread that calls this function will spin up a
@@ -3809,6 +3922,7 @@ dmu_recv_stream(dmu_recv_cookie_t *drc, vnode_t *vp, offset_t *voffp,
 	uint32_t payloadlen;
 	void *payload;
 	nvlist_t *begin_nvl = NULL;
+	kthread_t *rw_td;
 
 	ra = kmem_zalloc(sizeof (*ra), KM_SLEEP);
 	rwa = kmem_zalloc(sizeof (*rwa), KM_SLEEP);
@@ -3931,6 +4045,12 @@ dmu_recv_stream(dmu_recv_cookie_t *drc, vnode_t *vp, offset_t *voffp,
 			goto out;
 	}
 
+	/* Last chance before kicking off. */
+	if (drc->drc_flags & DRC_CLOSED) {
+		err = SET_ERROR(EINTR);
+		goto out;
+	}
+
 	(void) bqueue_init(&rwa->q,
 	    MAX(zfs_recv_queue_length, 2 * zfs_max_recordsize),
 	    offsetof(struct receive_record_arg, node));
@@ -3942,8 +4062,17 @@ dmu_recv_stream(dmu_recv_cookie_t *drc, vnode_t *vp, offset_t *voffp,
 	rwa->raw = drc->drc_raw;
 	rwa->os->os_raw_receive = drc->drc_raw;
 
-	(void) thread_create(NULL, 0, receive_writer_thread, rwa, 0, curproc,
+	/*
+	 * Register the rwa with the drc so it can be interrupted.  This
+	 * requires a mutex handshake to ensure validity.
+	 */
+	mutex_enter(&drc->drc_ds->ds_sendstream_lock);
+	drc->drc_rwa = rwa;
+	mutex_exit(&drc->drc_ds->ds_sendstream_lock);
+
+	rw_td = thread_create(NULL, 0, receive_writer_thread, rwa, 0, curproc,
 	    TS_RUN, minclsyspri);
+
 	/*
 	 * We're reading rwa->err without locks, which is safe since we are the
 	 * only reader, and the worker thread is the only writer.  It's ok if we
@@ -3959,7 +4088,7 @@ dmu_recv_stream(dmu_recv_cookie_t *drc, vnode_t *vp, offset_t *voffp,
 	 * if receive_read_record fails or we're at the end of the stream, then
 	 * we free ra->rrd and exit.
 	 */
-	while (rwa->err == 0) {
+	while (rwa->err == 0 && err == 0) {
 		err = spa_operation_interrupted(
 		    dsl_dataset_get_spa(drc->drc_ds));
 		if (err)
@@ -3977,18 +4106,31 @@ dmu_recv_stream(dmu_recv_cookie_t *drc, vnode_t *vp, offset_t *voffp,
 			break;
 		}
 
-		bqueue_enqueue(&rwa->q, ra->rrd,
+		err = bqueue_enqueue(&rwa->q, ra->rrd,
 		    sizeof (struct receive_record_arg) + ra->rrd->payload_size);
+		if (err != 0)
+			kmem_free(ra->rrd, sizeof (*ra->rrd));
 		ra->rrd = NULL;
 	}
-	if (ra->next_rrd == NULL)
-		ra->next_rrd = kmem_zalloc(sizeof (*ra->next_rrd), KM_SLEEP);
-	ra->next_rrd->eos_marker = B_TRUE;
-	bqueue_enqueue(&rwa->q, ra->next_rrd, 1);
+
+	if (err == 0 && rwa->err == 0) {
+		if (ra->next_rrd == NULL) {
+			ra->next_rrd = kmem_zalloc(sizeof (*ra->next_rrd),
+			    KM_SLEEP);
+		}
+		ra->next_rrd->eos_marker = B_TRUE;
+		/* If this enqueue fails, the stream was interrupted anyway. */
+		err = bqueue_enqueue(&rwa->q, ra->next_rrd, 1);
+		if (err != 0) {
+			kmem_free(ra->next_rrd, sizeof (*ra->next_rrd));
+			ra->next_rrd = NULL;
+		}
+	}
 
 	mutex_enter(&rwa->mutex);
 	while (!rwa->done) {
-		cv_wait(&rwa->cv, &rwa->mutex);
+		recv_check(drc, rwa, rw_td);
+		cv_wait_sig(&rwa->cv, &rwa->mutex);
 	}
 	mutex_exit(&rwa->mutex);
 
@@ -4017,6 +4159,10 @@ dmu_recv_stream(dmu_recv_cookie_t *drc, vnode_t *vp, offset_t *voffp,
 				err = next_err;
 		}
 	}
+
+	mutex_enter(&drc->drc_ds->ds_sendstream_lock);
+	drc->drc_rwa = NULL;
+	mutex_exit(&drc->drc_ds->ds_sendstream_lock);
 
 	cv_destroy(&rwa->cv);
 	mutex_destroy(&rwa->mutex);

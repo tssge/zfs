@@ -276,6 +276,7 @@ typedef struct dmu_sendarg {
 	uint64_t dsa_resume_offset;
 	boolean_t dsa_sent_begin;
 	boolean_t dsa_sent_end;
+	void *dsa_st_arg;
 } dmu_sendarg_t;
 
 void dmu_object_zapify(objset_t *, uint64_t, dmu_object_type_t, dmu_tx_t *);

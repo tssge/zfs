@@ -32,6 +32,7 @@ typedef struct bqueue {
 	kcondvar_t bq_pop_cv;
 	uint64_t bq_size;
 	uint64_t bq_maxsize;
+	unsigned int bq_flags;
 	size_t bq_node_offset;
 } bqueue_t;
 
@@ -42,8 +43,10 @@ typedef struct bqueue_node {
 
 
 int bqueue_init(bqueue_t *, uint64_t, size_t);
+void bqueue_close(bqueue_t *);
+boolean_t bqueue_is_closed(bqueue_t *);
 void bqueue_destroy(bqueue_t *);
-void bqueue_enqueue(bqueue_t *, void *, uint64_t);
+int bqueue_enqueue(bqueue_t *, void *, uint64_t);
 void *bqueue_dequeue(bqueue_t *);
 boolean_t bqueue_empty(bqueue_t *);
 
