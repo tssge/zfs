@@ -5711,15 +5711,18 @@ spa_export_common(char *pool, int new_state, nvlist_t **oldconfig,
 
 	/*
 	 * Cancel all sends/receives if necessary, and wait for their holds
-	 * to expire.
+	 * to expire.  This is done without the namespace lock, since some
+	 * operations may require acquiring it (although they will fail).
 	 */
-	if (force_removal) {
+	if (force_removal && spa->spa_sync_on) {
 		error = dsl_dataset_sendrecv_cancel_all(spa);
 		if (error != 0) {
 			spa_set_killer(spa, NULL);
 			spa_async_resume(spa);
 			return (error);
 		}
+		txg_force_export(spa);
+		spa_evicting_os_wait(spa);
 	}
 
 	if (spa->spa_zvol_taskq) {
@@ -5737,16 +5740,12 @@ spa_export_common(char *pool, int new_state, nvlist_t **oldconfig,
 	 * modify its state.  Objsets may be open only because they're dirty,
 	 * so we have to force it to sync before checking spa_refcnt.
 	 */
-	if (spa->spa_sync_on) {
-		if (force_removal) {
-			txg_force_export(spa);
-		} else {
-			error = txg_wait_synced_tx(spa->spa_dsl_pool, 0,
-			    NULL, TXG_WAIT_F_NOSUSPEND);
-			if (error != 0) {
-				mutex_exit(&spa_namespace_lock);
-				return (error);
-			}
+	if (!force_removal && spa->spa_sync_on) {
+		error = txg_wait_synced_tx(spa->spa_dsl_pool, 0,
+		    NULL, TXG_WAIT_F_NOSUSPEND);
+		if (error != 0) {
+			mutex_exit(&spa_namespace_lock);
+			return (error);
 		}
 		spa_evicting_os_wait(spa);
 	}
