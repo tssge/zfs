@@ -528,7 +528,7 @@ dsl_dataset_hold_obj_flags(dsl_pool_t *dp, uint64_t dsobj,
 				    sizeof (ds->ds_bookmarks), 1,
 				    &ds->ds_bookmarks);
 				if (zaperr != ENOENT)
-					VERIFY0(zaperr);
+					err = zaperr;
 			}
 		} else {
 			if (zfs_flags & ZFS_DEBUG_SNAPNAMES)
@@ -557,8 +557,8 @@ dsl_dataset_hold_obj_flags(dsl_pool_t *dp, uint64_t dsobj,
 
 		dsl_deadlist_open(&ds->ds_deadlist,
 		    mos, dsl_dataset_phys(ds)->ds_deadlist_obj);
-		uint64_t remap_deadlist_obj =
-		    dsl_dataset_get_remap_deadlist_object(ds);
+		uint64_t remap_deadlist_obj;
+		dsl_dataset_get_remap_deadlist_object(ds, &remap_deadlist_obj);
 		if (remap_deadlist_obj != 0) {
 			dsl_deadlist_open(&ds->ds_remap_deadlist, mos,
 			    remap_deadlist_obj);
@@ -1649,19 +1649,19 @@ dsl_dataset_snapshot_sync_impl(dsl_dataset_t *ds, const char *snapname,
 	    dsl_dataset_phys(ds)->ds_prev_snap_txg, tx);
 
 	if (dsl_dataset_remap_deadlist_exists(ds)) {
-		uint64_t remap_deadlist_obj =
-		    dsl_dataset_get_remap_deadlist_object(ds);
+		uint64_t rmobj;
 		/*
 		 * Move the remap_deadlist to the snapshot.  The head
 		 * will create a new remap deadlist on demand, from
 		 * dsl_dataset_block_remapped().
 		 */
+		VERIFY0(dsl_dataset_get_remap_deadlist_object(ds, &rmobj));
 		dsl_dataset_unset_remap_deadlist_object(ds, tx);
 		dsl_deadlist_close(&ds->ds_remap_deadlist);
 
 		dmu_object_zapify(mos, dsobj, DMU_OT_DSL_DATASET, tx);
 		VERIFY0(zap_add(mos, dsobj, DS_FIELD_REMAP_DEADLIST,
-		    sizeof (remap_deadlist_obj), 1, &remap_deadlist_obj, tx));
+		    sizeof (rmobj), 1, &rmobj, tx));
 	}
 
 	ASSERT3U(dsl_dataset_phys(ds)->ds_prev_snap_txg, <, tx->tx_txg);
@@ -3582,8 +3582,10 @@ dsl_dataset_swap_remap_deadlists(dsl_dataset_t *clone,
 
 	ASSERT(dsl_pool_sync_context(dp));
 
-	clone_remap_dl_obj = dsl_dataset_get_remap_deadlist_object(clone);
-	origin_remap_dl_obj = dsl_dataset_get_remap_deadlist_object(origin);
+	VERIFY0(dsl_dataset_get_remap_deadlist_object(clone,
+	    &clone_remap_dl_obj));
+	VERIFY0(dsl_dataset_get_remap_deadlist_object(origin,
+	    &origin_remap_dl_obj));
 
 	if (clone_remap_dl_obj != 0) {
 		dsl_deadlist_close(&clone->ds_remap_deadlist);
@@ -4287,12 +4289,13 @@ dsl_dataset_has_resume_receive_state(dsl_dataset_t *ds)
 	    ds->ds_object, DS_FIELD_RESUME_TOGUID) == 0);
 }
 
-uint64_t
-dsl_dataset_get_remap_deadlist_object(dsl_dataset_t *ds)
+int
+dsl_dataset_get_remap_deadlist_object(dsl_dataset_t *ds, uint64_t *obj)
 {
 	uint64_t remap_deadlist_obj;
 	int err;
 
+	*obj = 0;
 	if (!dsl_dataset_is_zapified(ds))
 		return (0);
 
@@ -4301,19 +4304,23 @@ dsl_dataset_get_remap_deadlist_object(dsl_dataset_t *ds)
 	    &remap_deadlist_obj);
 
 	if (err != 0) {
-		VERIFY3S(err, ==, ENOENT);
-		return (0);
+		if  (err == ENOENT)
+			return (0);
+		return (err);
 	}
 
 	ASSERT(remap_deadlist_obj != 0);
-	return (remap_deadlist_obj);
+	*obj = remap_deadlist_obj;
+	return (0);
 }
 
 boolean_t
 dsl_dataset_remap_deadlist_exists(dsl_dataset_t *ds)
 {
-	EQUIV(dsl_deadlist_is_open(&ds->ds_remap_deadlist),
-	    dsl_dataset_get_remap_deadlist_object(ds) != 0);
+	uint64_t rmobj;
+
+	(void) dsl_dataset_get_remap_deadlist_object(ds, &rmobj);
+	EQUIV(dsl_deadlist_is_open(&ds->ds_remap_deadlist), rmobj != 0);
 	return (dsl_deadlist_is_open(&ds->ds_remap_deadlist));
 }
 

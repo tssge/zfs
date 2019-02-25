@@ -265,17 +265,16 @@ dsl_destroy_snapshot_handle_remaps(dsl_dataset_t *ds, dsl_dataset_t *ds_next,
 
 	/* Merge our deadlist into next's and free it. */
 	if (dsl_dataset_remap_deadlist_exists(ds)) {
-		uint64_t remap_deadlist_object =
-		    dsl_dataset_get_remap_deadlist_object(ds);
-		ASSERT(remap_deadlist_object != 0);
+		uint64_t rmobj;
+		VERIFY0(dsl_dataset_get_remap_deadlist_object(ds, &rmobj));
+		ASSERT(rmobj != 0);
 
 		mutex_enter(&ds_next->ds_remap_deadlist_lock);
 		if (!dsl_dataset_remap_deadlist_exists(ds_next))
 			dsl_dataset_create_remap_deadlist(ds_next, tx);
 		mutex_exit(&ds_next->ds_remap_deadlist_lock);
 
-		dsl_deadlist_merge(&ds_next->ds_remap_deadlist,
-		    remap_deadlist_object, tx);
+		dsl_deadlist_merge(&ds_next->ds_remap_deadlist, rmobj, tx);
 		dsl_dataset_destroy_remap_deadlist(ds, tx);
 	}
 }
