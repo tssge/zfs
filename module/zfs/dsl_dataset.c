@@ -830,6 +830,7 @@ dsl_dataset_active_foreach(spa_t *spa, int func(dsl_dataset_t *, void *), void *
 	dnode_children_t *children_dnodes;
 	dnode_handle_t *dnh;
 	dsl_dataset_t *ds;
+	int epb, error;
 	int ret = 0;
 
 	/*
@@ -837,31 +838,36 @@ dsl_dataset_active_foreach(spa_t *spa, int func(dsl_dataset_t *, void *), void *
 	 * - If the block is not cached, skip.
 	 * - If the block has no user, skip.
 	 * - For each dnode child of the meta-dnode block:
-	 *   - If not loaded (no dnode handle), ignore
-	 *   - Check object type, if not DMU_OT_OBJSET, ignore
-	 *   - Hold the dataset, call the callback, quit if returns non zero,
-	 *     rele the dataset either way.
+	 *   - If not loaded (no dnode pointer), skip.
+	 *   - Attempt to hold the dataset, skip on failure.
+	 *   - Call the callback, quit if returns non zero,
+	 *   - Rele the dataset either way.
 	 */
 	rw_enter(&mdn->dn_struct_rwlock, RW_READER);
 	for (blkid = dsobj = 0;
-	    ret == 0 && blkid < mdn->dn_maxblkid; blkid++,
-	    dsobj += DNODES_PER_BLOCK) {
-		if (dbuf_hold_impl(mdn, 0, blkid, TRUE, TRUE, FTAG, &db) != 0)
+	    ret == 0 && blkid <= mdn->dn_maxblkid;
+	    blkid++, dsobj += epb) {
+		epb = DNODES_PER_BLOCK;
+		error = dbuf_hold_impl(mdn, 0, blkid, TRUE, TRUE, FTAG, &db);
+		if (error != 0) {
 			continue;
+		}
 
+		epb = db->db.db_size >> DNODE_SHIFT;
 		children_dnodes = dmu_buf_get_user(&db->db);
-		if (children_dnodes == NULL)
+		if (children_dnodes == NULL) {
 			goto skip;
+		}
 
-		for (i = 0; ret == 0 && i < DNODES_PER_BLOCK; i++) {
+		for (i = 0; ret == 0 && i < epb; i++) {
 			dnh = &children_dnodes->dnc_children[i];
 			if (!DN_SLOT_IS_PTR(dnh->dnh_dnode))
 				continue;
 
-			if (dnh->dnh_dnode->dn_type != DMU_OT_OBJSET)
+			error = dsl_dataset_hold_obj(dp, dsobj + i, FTAG, &ds);
+			if (error != 0)
 				continue;
 
-			VERIFY0(dsl_dataset_hold_obj(dp, dsobj + i, FTAG, &ds));
 			ret = func(ds, cl);
 			dsl_dataset_rele(ds, FTAG);
 		}
