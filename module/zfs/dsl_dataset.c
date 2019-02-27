@@ -465,6 +465,11 @@ dsl_dataset_hold_obj_flags(dsl_pool_t *dp, uint64_t dsobj,
 
 	ds = dmu_buf_get_user(dbuf);
 	if (ds == NULL) {
+		if (flags & DS_HOLD_FLAG_MUST_BE_OPEN) {
+			dmu_buf_rele(dbuf, tag);
+			return (SET_ERROR(ENXIO));
+		}
+
 		dsl_dataset_t *winner = NULL;
 
 		ds = kmem_zalloc(sizeof (dsl_dataset_t), KM_SLEEP);
@@ -828,7 +833,8 @@ dsl_dataset_active_foreach(spa_t *spa, int func(dsl_dataset_t *, void *), void *
 			if (!DN_SLOT_IS_PTR(dnh->dnh_dnode))
 				continue;
 
-			error = dsl_dataset_hold_obj(dp, dsobj + i, FTAG, &ds);
+			error = dsl_dataset_hold_obj_flags(dp, dsobj + i,
+			    DS_HOLD_FLAG_MUST_BE_OPEN, FTAG, &ds);
 			if (error != 0)
 				continue;
 

@@ -298,7 +298,8 @@ typedef struct dsl_dataset_snapshot_arg {
 
 /* flags for holding the dataset */
 typedef enum ds_hold_flags {
-	DS_HOLD_FLAG_DECRYPT	= 1 << 0 /* needs access to encrypted data */
+	DS_HOLD_FLAG_DECRYPT	= 1 << 0, /* needs access to encrypted data */
+	DS_HOLD_FLAG_MUST_BE_OPEN = 1 << 1, /* dataset must already be open */
 } ds_hold_flags_t;
 
 int dsl_dataset_hold(struct dsl_pool *dp, const char *name, void *tag,
