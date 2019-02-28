@@ -70,7 +70,7 @@ struct dmu_tx;
 extern void txg_init(struct dsl_pool *dp, uint64_t txg);
 extern void txg_fini(struct dsl_pool *dp);
 extern void txg_sync_start(struct dsl_pool *dp);
-extern void txg_sync_stop(struct dsl_pool *dp);
+extern int txg_sync_stop(struct dsl_pool *dp, uint64_t txg_how);
 extern uint64_t txg_hold_open(struct dsl_pool *dp, txg_handle_t *txghp);
 extern void txg_rele_to_quiesce(txg_handle_t *txghp);
 extern void txg_rele_to_sync(txg_handle_t *txghp);

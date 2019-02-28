@@ -256,10 +256,11 @@ txg_thread_wait(tx_state_t *tx, callb_cpr_t *cpr, kcondvar_t *cv, clock_t time)
 /*
  * Stop syncing transaction groups.
  */
-void
-txg_sync_stop(dsl_pool_t *dp)
+int
+txg_sync_stop(dsl_pool_t *dp, uint64_t txg_how)
 {
 	tx_state_t *tx = &dp->dp_tx;
+	int err;
 
 	dprintf("pool %p\n", dp);
 	/*
@@ -270,8 +271,10 @@ txg_sync_stop(dsl_pool_t *dp)
 	/*
 	 * We need to ensure that we've vacated the deferred space_maps.
 	 */
-	if (!spa_exiting_any(dp->dp_spa))
-		txg_wait_synced(dp, tx->tx_open_txg + TXG_DEFER_SIZE);
+	err = txg_wait_synced_tx(dp, tx->tx_open_txg + TXG_DEFER_SIZE,
+	    NULL, txg_how);
+	if (err != 0)
+		return (err);
 
 	/*
 	 * Wake all sync threads and wait for them to die.
@@ -292,6 +295,7 @@ txg_sync_stop(dsl_pool_t *dp)
 	tx->tx_exiting = 0;
 
 	mutex_exit(&tx->tx_sync_lock);
+	return (0);
 }
 
 uint64_t

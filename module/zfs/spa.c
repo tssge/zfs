@@ -1430,10 +1430,10 @@ spa_config_parse(spa_t *spa, vdev_t **vdp, nvlist_t *nv, vdev_t *parent,
 /*
  * Opposite of spa_load().
  */
-static void
-spa_unload(spa_t *spa)
+static int
+spa_unload(spa_t *spa, uint64_t txg_how)
 {
-	int i;
+	int i, err;
 	vdev_t *vd;
 	uint64_t t, txg;
 
@@ -1450,7 +1450,11 @@ spa_unload(spa_t *spa)
 	 * Stop syncing.
 	 */
 	if (spa->spa_sync_on) {
-		txg_sync_stop(spa->spa_dsl_pool);
+		err = txg_sync_stop(spa->spa_dsl_pool, txg_how);
+		if (err != 0) {
+			spa_async_resume(spa);
+			return (err);
+		}
 		spa->spa_sync_on = B_FALSE;
 	}
 
@@ -1593,6 +1597,7 @@ spa_unload(spa_t *spa)
 	}
 
 	spa_config_exit(spa, SCL_ALL, FTAG);
+	return (0);
 }
 
 /*
@@ -3795,7 +3800,7 @@ spa_ld_prepare_for_reload(spa_t *spa)
 	int mode = spa->spa_mode;
 	int async_suspended = spa->spa_async_suspended;
 
-	spa_unload(spa);
+	VERIFY0(spa_unload(spa, 0));
 	spa_deactivate(spa);
 	spa_activate(spa, mode);
 
@@ -4290,7 +4295,7 @@ spa_load_retry(spa_t *spa, spa_load_state_t state)
 {
 	int mode = spa->spa_mode;
 
-	spa_unload(spa);
+	VERIFY0(spa_unload(spa, 0));
 	spa_deactivate(spa);
 
 	spa->spa_load_max_txg = spa->spa_uberblock.ub_txg - 1;
@@ -4486,7 +4491,7 @@ spa_open_common(const char *pool, spa_t **spapp, void *tag, nvlist_t *nvpolicy,
 			 * this is the case, the config cache is out of sync and
 			 * we should remove the pool from the namespace.
 			 */
-			spa_unload(spa);
+			VERIFY0(spa_unload(spa, 0));
 			spa_deactivate(spa);
 			spa_write_cachefile(spa, B_TRUE, B_TRUE);
 			spa_remove(spa);
@@ -4508,7 +4513,7 @@ spa_open_common(const char *pool, spa_t **spapp, void *tag, nvlist_t *nvpolicy,
 				    ZPOOL_CONFIG_LOAD_INFO,
 				    spa->spa_load_info) == 0);
 			}
-			spa_unload(spa);
+			VERIFY0(spa_unload(spa, 0));
 			spa_deactivate(spa);
 			spa->spa_last_open_failed = error;
 			if (locked)
@@ -5171,7 +5176,7 @@ spa_create(const char *pool, nvlist_t *nvroot, nvlist_t *props,
 	spa_config_exit(spa, SCL_ALL, FTAG);
 
 	if (error != 0) {
-		spa_unload(spa);
+		VERIFY0(spa_unload(spa, 0));
 		spa_deactivate(spa);
 		spa_remove(spa);
 		mutex_exit(&spa_namespace_lock);
@@ -5442,7 +5447,7 @@ spa_import(char *pool, nvlist_t *config, nvlist_t *props, uint64_t flags)
 
 	if (error != 0 || (props && spa_writeable(spa) &&
 	    (error = spa_prop_set(spa, props)))) {
-		spa_unload(spa);
+		VERIFY0(spa_unload(spa, 0));
 		spa_deactivate(spa);
 		spa_remove(spa);
 		mutex_exit(&spa_namespace_lock);
@@ -5500,7 +5505,7 @@ spa_import(char *pool, nvlist_t *config, nvlist_t *props, uint64_t flags)
 		error = spa_config_update_pool(spa);
 		if (error != 0) {
 			mutex_enter(&spa_namespace_lock);
-			spa_unload(spa);
+			VERIFY0(spa_unload(spa, 0));
 			spa_deactivate(spa);
 			spa_remove(spa);
 			mutex_exit(&spa_namespace_lock);
@@ -5633,7 +5638,7 @@ spa_tryimport(nvlist_t *tryconfig)
 		spa_config_exit(spa, SCL_CONFIG, FTAG);
 	}
 
-	spa_unload(spa);
+	VERIFY0(spa_unload(spa, 0));
 	spa_deactivate(spa);
 	spa_remove(spa);
 	mutex_exit(&spa_namespace_lock);
@@ -5668,6 +5673,7 @@ spa_export_common(char *pool, int new_state, nvlist_t **oldconfig,
 	int error;
 	spa_t *spa;
 	boolean_t force_removal, modifying;
+	uint64_t txg_how;
 
 	if (oldconfig)
 		*oldconfig = NULL;
@@ -5743,10 +5749,8 @@ spa_export_common(char *pool, int new_state, nvlist_t **oldconfig,
 	if (!force_removal && spa->spa_sync_on) {
 		error = txg_wait_synced_tx(spa->spa_dsl_pool, 0,
 		    NULL, TXG_WAIT_F_NOSUSPEND);
-		if (error != 0) {
-			mutex_exit(&spa_namespace_lock);
-			return (error);
-		}
+		if (error != 0)
+			goto fail;
 		spa_evicting_os_wait(spa);
 	}
 
@@ -5776,9 +5780,8 @@ spa_export_common(char *pool, int new_state, nvlist_t **oldconfig,
 	 */
 	if (!spa_refcount_zero(spa) || (spa->spa_inject_ref != 0)) {
 		VERIFY(!force_removal);
-		spa_async_resume(spa);
-		mutex_exit(&spa_namespace_lock);
-		return (SET_ERROR(EBUSY));
+		error = SET_ERROR(EBUSY);
+		goto fail;
 	}
 
 	if (spa->spa_sync_on) {
@@ -5790,10 +5793,8 @@ spa_export_common(char *pool, int new_state, nvlist_t **oldconfig,
 		 */
 		if (!force && new_state == POOL_STATE_EXPORTED &&
 		    spa_has_active_shared_spare(spa)) {
-			spa_set_killer(spa, NULL);
-			spa_async_resume(spa);
-			mutex_exit(&spa_namespace_lock);
-			return (SET_ERROR(EXDEV));
+			error = SET_ERROR(EXDEV);
+			goto fail;
 		}
 
 		/*
@@ -5821,7 +5822,14 @@ export_spa:
 		spa_event_notify(spa, NULL, NULL, ESC_ZFS_POOL_EXPORT);
 
 	if (spa->spa_state != POOL_STATE_UNINITIALIZED) {
-		spa_unload(spa);
+		/*
+		 * If the pool is not being hard forced, throw an error upon
+		 * suspension and abort.
+		 */
+		txg_how = (!hardforce) ? TXG_WAIT_F_NOSUSPEND : 0;
+		error = spa_unload(spa, txg_how);
+		if (error != 0)
+			goto fail;
 		spa_deactivate(spa);
 	}
 
@@ -5836,6 +5844,13 @@ export_spa:
 	mutex_exit(&spa_namespace_lock);
 
 	return (0);
+
+fail:
+	if (force_removal)
+		spa_set_killer(spa, NULL);
+	spa_async_resume(spa);
+	mutex_exit(&spa_namespace_lock);
+	return (error);
 }
 
 /*
@@ -6782,7 +6797,7 @@ spa_vdev_split_mirror(spa_t *spa, char *newname, nvlist_t *config,
 	return (error);
 
 out:
-	spa_unload(newspa);
+	VERIFY0(spa_unload(newspa, 0));
 	spa_deactivate(newspa);
 	spa_remove(newspa);
 
@@ -8224,7 +8239,7 @@ spa_evict_all(void)
 		spa_close(spa, FTAG);
 
 		if (spa->spa_state != POOL_STATE_UNINITIALIZED) {
-			spa_unload(spa);
+			VERIFY0(spa_unload(spa, 0));
 			spa_deactivate(spa);
 		}
 		spa_remove(spa);
