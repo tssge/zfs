@@ -417,6 +417,14 @@ typedef zio_t *zio_pipe_stage_t(zio_t *zio);
 #define	ZIO_REEXECUTE_SUSPEND	0x02
 #define	ZIO_REEXECUTE_CANCELLED	0x04
 
+/*
+ * The io_trim flags are used to specify the type of TRIM to perform.  They
+ * only apply to ZIO_TYPE_TRIM zios are distinct from io_flags.
+ */
+enum trim_flag {
+	ZIO_TRIM_SECURE		= 1 << 0,
+};
+
 typedef struct zio_alloc_list {
 	list_t  zal_list;
 	uint64_t zal_size;
@@ -435,6 +443,7 @@ struct zio {
 	zio_prop_t	io_prop;
 	zio_type_t	io_type;
 	enum zio_child	io_child_type;
+	enum trim_flag	io_trim_flags;
 	int		io_cmd;
 	zio_priority_t	io_priority;
 	uint8_t		io_reexecute;
@@ -549,6 +558,10 @@ extern zio_t *zio_claim(zio_t *pio, spa_t *spa, uint64_t txg,
 
 extern zio_t *zio_ioctl(zio_t *pio, spa_t *spa, vdev_t *vd, int cmd,
     zio_done_func_t *done, void *private, enum zio_flag flags);
+
+extern zio_t *zio_trim(zio_t *pio, vdev_t *vd, uint64_t offset, uint64_t size,
+    zio_done_func_t *done, void *private, zio_priority_t priority,
+    enum zio_flag flags, enum trim_flag trim_flags);
 
 extern zio_t *zio_read_phys(zio_t *pio, vdev_t *vd, uint64_t offset,
     uint64_t size, struct abd *data, int checksum,
