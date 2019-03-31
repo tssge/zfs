@@ -685,7 +685,18 @@ dsl_dataset_hold_obj_flags(dsl_pool_t *dp, uint64_t dsobj,
 	    dp->dp_origin_snap == NULL || ds == dp->dp_origin_snap);
 	*dsp = ds;
 
-	return (0);
+	if (err != 0)
+		return (err);
+
+	ASSERT3P(*dsp, !=, NULL);
+
+	if (flags & DS_HOLD_FLAG_DECRYPT) {
+		err = dsl_dataset_create_key_mapping(*dsp);
+		if (err != 0)
+			dsl_dataset_rele(*dsp, tag);
+	}
+
+	return (err);
 }
 
 int
@@ -701,24 +712,10 @@ dsl_dataset_create_key_mapping(dsl_dataset_t *ds)
 }
 
 int
-dsl_dataset_hold_obj_flags(dsl_pool_t *dp, uint64_t dsobj,
-    ds_hold_flags_t flags, void *tag, dsl_dataset_t **dsp)
+dsl_dataset_hold_obj(dsl_pool_t *dp, uint64_t dsobj, void *tag,
+    dsl_dataset_t **dsp)
 {
-	int err;
-
-	err = dsl_dataset_hold_obj(dp, dsobj, tag, dsp);
-	if (err != 0)
-		return (err);
-
-	ASSERT3P(*dsp, !=, NULL);
-
-	if (flags & DS_HOLD_FLAG_DECRYPT) {
-		err = dsl_dataset_create_key_mapping(*dsp);
-		if (err != 0)
-			dsl_dataset_rele(*dsp, tag);
-	}
-
-	return (err);
+	return (dsl_dataset_hold_obj_flags(dp, dsobj, 0, tag, dsp));
 }
 
 int
