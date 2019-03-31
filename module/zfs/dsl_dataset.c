@@ -518,8 +518,8 @@ dsl_dataset_try_add_ref(dsl_pool_t *dp, dsl_dataset_t *ds, void *tag)
 }
 
 int
-dsl_dataset_hold_obj(dsl_pool_t *dp, uint64_t dsobj, void *tag,
-    dsl_dataset_t **dsp)
+dsl_dataset_hold_obj_flags(dsl_pool_t *dp, uint64_t dsobj,
+    ds_hold_flags_t flags, void *tag, dsl_dataset_t **dsp)
 {
 	objset_t *mos = dp->dp_meta_objset;
 	dmu_buf_t *dbuf;
