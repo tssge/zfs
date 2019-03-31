@@ -61,7 +61,6 @@
 
 int zfs_recv_queue_length = SPA_MAXBLOCKSIZE;
 
-static char *dmu_recv_tag = "dmu_recv_tag";
 const char *recv_clone_name = "%recv";
 
 /* The receive was closed by an external call. */
