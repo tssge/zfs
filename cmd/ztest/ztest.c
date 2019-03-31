@@ -214,6 +214,7 @@ extern int zfs_abd_scatter_enabled;
 extern int dmu_object_alloc_chunk_shift;
 extern boolean_t zfs_force_some_double_word_sm_entries;
 extern unsigned long zio_decompress_fail_fraction;
+extern unsigned long zfs_reconstruct_indirect_damage_fraction;
 
 static ztest_shared_opts_t *ztest_shared_opts;
 static ztest_shared_opts_t ztest_opts;
@@ -1323,7 +1324,7 @@ ztest_dmu_objset_own(const char *name, dmu_objset_type_t type,
  */
 typedef struct {
 	list_node_t z_lnode;
-	refcount_t z_refcnt;
+	zfs_refcount_t z_refcnt;
 	uint64_t z_object;
 	zfs_rlock_t z_range_lock;
 } ztest_znode_t;
@@ -1339,7 +1340,7 @@ ztest_znode_init(uint64_t object)
 	ztest_znode_t *zp = umem_alloc(sizeof (*zp), UMEM_NOFAIL);
 
 	list_link_init(&zp->z_lnode);
-	refcount_create(&zp->z_refcnt);
+	zfs_refcount_create(&zp->z_refcnt);
 	zp->z_object = object;
 	zfs_rlock_init(&zp->z_range_lock);
 
@@ -1349,10 +1350,10 @@ ztest_znode_init(uint64_t object)
 static void
 ztest_znode_fini(ztest_znode_t *zp)
 {
-	ASSERT(refcount_is_zero(&zp->z_refcnt));
+	ASSERT(zfs_refcount_is_zero(&zp->z_refcnt));
 	zfs_rlock_destroy(&zp->z_range_lock);
 	zp->z_object = 0;
-	refcount_destroy(&zp->z_refcnt);
+	zfs_refcount_destroy(&zp->z_refcnt);
 	list_link_init(&zp->z_lnode);
 	umem_free(zp, sizeof (*zp));
 }
@@ -1382,13 +1383,13 @@ ztest_znode_get(ztest_ds_t *zd, uint64_t object)
 	for (zp = list_head(&zll->z_list); (zp);
 	    zp = list_next(&zll->z_list, zp)) {
 		if (zp->z_object == object) {
-			refcount_add(&zp->z_refcnt, RL_TAG);
+			zfs_refcount_add(&zp->z_refcnt, RL_TAG);
 			break;
 		}
 	}
 	if (zp == NULL) {
 		zp = ztest_znode_init(object);
-		refcount_add(&zp->z_refcnt, RL_TAG);
+		zfs_refcount_add(&zp->z_refcnt, RL_TAG);
 		list_insert_head(&zll->z_list, zp);
 	}
 	mutex_exit(&zll->z_lock);
@@ -1402,8 +1403,8 @@ ztest_znode_put(ztest_ds_t *zd, ztest_znode_t *zp)
 	ASSERT3U(zp->z_object, !=, 0);
 	zll = &zd->zd_range_lock[zp->z_object & (ZTEST_OBJECT_LOCKS - 1)];
 	mutex_enter(&zll->z_lock);
-	refcount_remove(&zp->z_refcnt, RL_TAG);
-	if (refcount_is_zero(&zp->z_refcnt)) {
+	zfs_refcount_remove(&zp->z_refcnt, RL_TAG);
+	if (zfs_refcount_is_zero(&zp->z_refcnt)) {
 		list_remove(&zll->z_list, zp);
 		ztest_znode_fini(zp);
 	}
@@ -6479,7 +6480,7 @@ ztest_run_zdb(char *pool)
 
 	(void) sprintf(zdb,
 	    "%s -bcc%s%s -G -d -U %s "
-	    "-o zfs_reconstruct_indirect_combinations_max=1000000 %s",
+	    "-o zfs_reconstruct_indirect_combinations_max=65536 %s",
 	    bin,
 	    ztest_opts.zo_verbose >= 3 ? "s" : "",
 	    ztest_opts.zo_verbose >= 4 ? "v" : "",
@@ -7517,6 +7518,13 @@ main(int argc, char **argv)
 	 * of them so the feature get tested.
 	 */
 	zfs_force_some_double_word_sm_entries = B_TRUE;
+
+	/*
+	 * Verify that even extensively damaged split blocks with many
+	 * segments can be reconstructed in a reasonable amount of time
+	 * when reconstruction is known to be possible.
+	 */
+	zfs_reconstruct_indirect_damage_fraction = 4;
 
 	action.sa_handler = sig_handler;
 	sigemptyset(&action.sa_mask);
