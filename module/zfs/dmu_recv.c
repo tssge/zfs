@@ -3054,9 +3054,6 @@ dmu_objset_is_receiving(objset_t *os)
 }
 
 #if defined(_KERNEL)
-/* BEGIN CSTYLED */
-module_param(zfs_override_estimate_recordsize, ulong, 0644);
-MODULE_PARM_DESC(zfs_override_estimate_recordsize,
-	"Record size calculation override for zfs send estimates");
-/* END CSTYLED */
+module_param(zfs_recv_queue_length, int, 0644);
+MODULE_PARM_DESC(zfs_recv_queue_length, "Maximum receive queue length");
 #endif
