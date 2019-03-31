@@ -113,6 +113,7 @@ KERNEL_C = \
 	vdev_indirect_births.c \
 	vdev_indirect.c \
 	vdev_indirect_mapping.c \
+	vdev_initialize.c \
 	vdev_label.c \
 	vdev_mirror.c \
 	vdev_missing.c \
@@ -188,11 +189,10 @@ nodist_libzpool_la_SOURCES = \
 	$(LUA_C)
 
 libzpool_la_LIBADD = \
-	$(top_builddir)/lib/libavl/libavl.la \
 	$(top_builddir)/lib/libicp/libicp.la \
 	$(top_builddir)/lib/libnvpair/libnvpair.la \
-	$(top_builddir)/lib/libspl/libspl.la \
-	$(top_builddir)/lib/libunicode/libunicode.la
+	$(top_builddir)/lib/libunicode/libunicode.la \
+	$(top_builddir)/lib/libzutil/libzutil.la
 
 libzpool_la_LIBADD += $(ZLIB) -ldl
 libzpool_la_LDFLAGS = -pthread -version-info 2:0:0

@@ -77,7 +77,8 @@ uint64_t zio_buf_cache_allocs[SPA_MAXBLOCKSIZE >> SPA_MINBLOCKSHIFT];
 uint64_t zio_buf_cache_frees[SPA_MAXBLOCKSIZE >> SPA_MINBLOCKSHIFT];
 #endif
 
-int zio_delay_max = ZIO_DELAY_MAX;
+/* Mark IOs as "slow" if they take longer than 30 seconds */
+int zio_slow_io_ms = (30 * MILLISEC);
 
 #define	BP_SPANB(indblkshift, level) \
 	(((uint64_t)1) << ((level) * ((indblkshift) - SPA_BLKPTRSHIFT)))
@@ -1737,7 +1738,8 @@ zio_taskq_dispatch(zio_t *zio, zio_taskq_type_t q, boolean_t cutinline)
 	 * If this is a high priority I/O, then use the high priority taskq if
 	 * available.
 	 */
-	if (zio->io_priority == ZIO_PRIORITY_NOW &&
+	if ((zio->io_priority == ZIO_PRIORITY_NOW ||
+	    zio->io_priority == ZIO_PRIORITY_SYNC_WRITE) &&
 	    spa->spa_zio_taskq[t][q + 1].stqs_count != 0)
 		q++;
 
@@ -4074,7 +4076,7 @@ zio_encrypt(zio_t *zio)
 	/*
 	 * Later passes of sync-to-convergence may decide to rewrite data
 	 * in place to avoid more disk reallocations. This presents a problem
-	 * for encryption because this consitutes rewriting the new data with
+	 * for encryption because this constitutes rewriting the new data with
 	 * the same encryption key and IV. However, this only applies to blocks
 	 * in the MOS (particularly the spacemaps) and we do not encrypt the
 	 * MOS. We assert that the zio is allocating or an intent log write
@@ -4210,7 +4212,7 @@ zio_checksum_verified(zio_t *zio)
  * ==========================================================================
  * Error rank.  Error are ranked in the order 0, ENXIO, ECKSUM, EIO, other.
  * An error of 0 indicates success.  ENXIO indicates whole-device failure,
- * which may be transient (e.g. unplugged) or permament.  ECKSUM and EIO
+ * which may be transient (e.g. unplugged) or permanent.  ECKSUM and EIO
  * indicate errors that are specific to one I/O, and most likely permanent.
  * Any other error is presumed to be worse because we weren't expecting it.
  * ==========================================================================
@@ -4381,7 +4383,7 @@ zio_done(zio_t *zio)
 {
 	/*
 	 * Always attempt to keep stack usage minimal here since
-	 * we can be called recurisvely up to 19 levels deep.
+	 * we can be called recursively up to 19 levels deep.
 	 */
 	const uint64_t psize = zio->io_size;
 	zio_t *pio, *pio_next;
@@ -4498,10 +4500,28 @@ zio_done(zio_t *zio)
 	 * 30 seconds to complete, post an error described the I/O delay.
 	 * We ignore these errors if the device is currently unavailable.
 	 */
-	if (zio->io_delay >= MSEC2NSEC(zio_delay_max)) {
-		if (zio->io_vd != NULL && !vdev_is_dead(zio->io_vd))
-			zfs_ereport_post(FM_EREPORT_ZFS_DELAY, zio->io_spa,
-			    zio->io_vd, &zio->io_bookmark, zio, 0, 0);
+	if (zio->io_delay >= MSEC2NSEC(zio_slow_io_ms)) {
+		if (zio->io_vd != NULL && !vdev_is_dead(zio->io_vd)) {
+			/*
+			 * We want to only increment our slow IO counters if
+			 * the IO is valid (i.e. not if the drive is removed).
+			 *
+			 * zfs_ereport_post() will also do these checks, but
+			 * it can also ratelimit and have other failures, so we
+			 * need to increment the slow_io counters independent
+			 * of it.
+			 */
+			if (zfs_ereport_is_valid(FM_EREPORT_ZFS_DELAY,
+			    zio->io_spa, zio->io_vd, zio)) {
+				mutex_enter(&zio->io_vd->vdev_stat_lock);
+				zio->io_vd->vdev_stat.vs_slow_ios++;
+				mutex_exit(&zio->io_vd->vdev_stat_lock);
+
+				zfs_ereport_post(FM_EREPORT_ZFS_DELAY,
+				    zio->io_spa, zio->io_vd, &zio->io_bookmark,
+				    zio, 0, 0);
+			}
+		}
 	}
 
 	if (zio->io_error && !spa_exiting_any(zio->io_spa)) {
@@ -4905,8 +4925,9 @@ EXPORT_SYMBOL(zio_data_buf_alloc);
 EXPORT_SYMBOL(zio_buf_free);
 EXPORT_SYMBOL(zio_data_buf_free);
 
-module_param(zio_delay_max, int, 0644);
-MODULE_PARM_DESC(zio_delay_max, "Max zio millisec delay before posting event");
+module_param(zio_slow_io_ms, int, 0644);
+MODULE_PARM_DESC(zio_slow_io_ms,
+	"Max I/O completion time (milliseconds) before marking it as slow");
 
 module_param(zio_requeue_io_start_cut_in_line, int, 0644);
 MODULE_PARM_DESC(zio_requeue_io_start_cut_in_line, "Prioritize requeued I/O");

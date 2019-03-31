@@ -20,25 +20,30 @@
  */
 
 /*
- * Copyright 2008 Sun Microsystems, Inc.
- * All rights reserved.  Use is subject to license terms.
+ * Copyright (c) 2016 by Delphix. All rights reserved.
  */
 
-#include <string.h>
-#include <sys/types.h>
+#ifndef _SYS_VDEV_INITIALIZE_H
+#define	_SYS_VDEV_INITIALIZE_H
 
-/*
- * Returns the number of non-NULL bytes in string argument,
- * but not more than maxlen.  Does not look past str + maxlen.
- */
-size_t
-strnlen(const char *str, size_t maxlen)
-{
-	const char *ptr;
+#include <sys/spa.h>
 
-	ptr = memchr(str, 0, maxlen);
-	if (ptr == NULL)
-		return (maxlen);
+#ifdef	__cplusplus
+extern "C" {
+#endif
 
-	return (ptr - str);
+extern void vdev_initialize(vdev_t *vd);
+extern void vdev_initialize_stop(vdev_t *vd,
+    vdev_initializing_state_t tgt_state, list_t *vd_list);
+extern void vdev_initialize_stop_all(vdev_t *vd,
+    vdev_initializing_state_t tgt_state);
+extern void vdev_initialize_stop_wait(spa_t *spa, list_t *vd_list);
+extern void vdev_initialize_restart(vdev_t *vd);
+extern void vdev_xlate(vdev_t *vd, const range_seg_t *logical_rs,
+    range_seg_t *physical_rs);
+
+#ifdef	__cplusplus
 }
+#endif
+
+#endif	/* _SYS_VDEV_INITIALIZE_H */

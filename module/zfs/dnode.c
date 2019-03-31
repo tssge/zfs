@@ -1106,6 +1106,7 @@ dnode_check_slots_free(dnode_children_t *children, int idx, int slots)
 		} else if (DN_SLOT_IS_PTR(dn)) {
 			mutex_enter(&dn->dn_mtx);
 			boolean_t can_free = (dn->dn_type == DMU_OT_NONE &&
+			    zfs_refcount_is_zero(&dn->dn_holds) &&
 			    !DNODE_IS_DIRTY(dn));
 			mutex_exit(&dn->dn_mtx);
 
@@ -1253,8 +1254,10 @@ dnode_buf_evict_async(void *dbu)
  * EINVAL - Invalid object number or flags.
  * ENOSPC - Hole too small to fulfill "slots" request (DNODE_MUST_BE_FREE)
  * EEXIST - Refers to an allocated dnode (DNODE_MUST_BE_FREE)
+ *        - Refers to a freeing dnode (DNODE_MUST_BE_FREE)
  *        - Refers to an interior dnode slot (DNODE_MUST_BE_ALLOCATED)
  * ENOENT - The requested dnode is not allocated (DNODE_MUST_BE_ALLOCATED)
+ *        - The requested dnode is being freed (DNODE_MUST_BE_ALLOCATED)
  * EIO    - I/O error when reading the meta dnode dbuf.
  *
  * succeeds even for free dnodes.
@@ -1443,7 +1446,7 @@ dnode_hold_impl(objset_t *os, uint64_t object, int flag, int slots,
 		}
 
 		mutex_enter(&dn->dn_mtx);
-		if (dn->dn_type == DMU_OT_NONE) {
+		if (dn->dn_type == DMU_OT_NONE || dn->dn_free_txg != 0) {
 			DNODE_STAT_BUMP(dnode_hold_alloc_type_none);
 			mutex_exit(&dn->dn_mtx);
 			dnode_slots_rele(dnc, idx, slots);
@@ -1502,7 +1505,7 @@ dnode_hold_impl(objset_t *os, uint64_t object, int flag, int slots,
 		}
 
 		mutex_enter(&dn->dn_mtx);
-		if (!zfs_refcount_is_zero(&dn->dn_holds)) {
+		if (!zfs_refcount_is_zero(&dn->dn_holds) || dn->dn_free_txg) {
 			DNODE_STAT_BUMP(dnode_hold_free_refcount);
 			mutex_exit(&dn->dn_mtx);
 			dnode_slots_rele(dnc, idx, slots);

@@ -976,6 +976,7 @@ zfs_iput_async(struct inode *ip)
 		iput(ip);
 }
 
+/* ARGSUSED */
 void
 zfs_get_done(zgd_t *zgd, int error)
 {
@@ -991,9 +992,6 @@ zfs_get_done(zgd_t *zgd, int error)
 	 * txg stopped from syncing.
 	 */
 	zfs_iput_async(ZTOI(zp));
-
-	if (error == 0 && zgd->zgd_bp)
-		zil_lwb_add_block(zgd->zgd_lwb, zgd->zgd_bp);
 
 	kmem_free(zgd, sizeof (zgd_t));
 }
@@ -1118,11 +1116,7 @@ zfs_get_data(void *arg, lr_write_t *lr, char *buf, struct lwb *lwb, zio_t *zio)
 				 * TX_WRITE2 relies on the data previously
 				 * written by the TX_WRITE that caused
 				 * EALREADY.  We zero out the BP because
-				 * it is the old, currently-on-disk BP,
-				 * so there's no need to zio_flush() its
-				 * vdevs (flushing would needlesly hurt
-				 * performance, and doesn't work on
-				 * indirect vdevs).
+				 * it is the old, currently-on-disk BP.
 				 */
 				zgd->zgd_bp = NULL;
 				BP_ZERO(bp);
@@ -1208,27 +1202,6 @@ zfs_lookup(struct inode *dip, char *nm, struct inode **ipp, int flags,
 				return (0);
 			}
 			return (error);
-#ifdef HAVE_DNLC
-		} else if (!zdp->z_zfsvfs->z_norm &&
-		    (zdp->z_zfsvfs->z_case == ZFS_CASE_SENSITIVE)) {
-
-			vnode_t *tvp = dnlc_lookup(dvp, nm);
-
-			if (tvp) {
-				error = zfs_fastaccesschk_execute(zdp, cr);
-				if (error) {
-					iput(tvp);
-					return (error);
-				}
-				if (tvp == DNLC_NO_VNODE) {
-					iput(tvp);
-					return (SET_ERROR(ENOENT));
-				} else {
-					*vpp = tvp;
-					return (specvp_check(vpp, cr));
-				}
-			}
-#endif /* HAVE_DNLC */
 		}
 	}
 
@@ -1764,13 +1737,6 @@ top:
 		error = SET_ERROR(EPERM);
 		goto out;
 	}
-
-#ifdef HAVE_DNLC
-	if (realnmp)
-		dnlc_remove(dvp, realnmp->pn_buf);
-	else
-		dnlc_remove(dvp, name);
-#endif /* HAVE_DNLC */
 
 	mutex_enter(&zp->z_lock);
 	may_delete_now = atomic_read(&ip->i_count) == 1 && !(zp->z_is_mapped);

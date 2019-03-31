@@ -23,6 +23,13 @@ EXTRA_DIST  = autogen.sh copy-builtin
 EXTRA_DIST += config/config.awk config/rpm.am config/deb.am config/tgz.am
 EXTRA_DIST += META AUTHORS COPYRIGHT LICENSE NEWS NOTICE README.md
 
+# Include all the extra licensing information for modules
+EXTRA_DIST += module/icp/algs/skein/THIRDPARTYLICENSE module/icp/algs/skein/THIRDPARTYLICENSE.descrip
+EXTRA_DIST += module/icp/asm-x86_64/aes/THIRDPARTYLICENSE.gladman module/icp/asm-x86_64/aes/THIRDPARTYLICENSE.gladman.descrip
+EXTRA_DIST += module/icp/asm-x86_64/aes/THIRDPARTYLICENSE.openssl module/icp/asm-x86_64/aes/THIRDPARTYLICENSE.openssl.descrip
+EXTRA_DIST += module/spl/THIRDPARTYLICENSE.gplv2 module/spl/THIRDPARTYLICENSE.gplv2.descrip
+EXTRA_DIST += module/zfs/THIRDPARTYLICENSE.cityhash module/zfs/THIRDPARTYLICENSE.cityhash.descrip
+
 @CODE_COVERAGE_RULES@
 
 .PHONY: gitrev
@@ -117,7 +124,7 @@ cppcheck:
 		cppcheck --quiet --force --error-exitcode=2 --inline-suppr \
 			--suppressions-list=.github/suppressions.txt \
 			-UHAVE_SSE2 -UHAVE_AVX512F -UHAVE_UIO_ZEROCOPY \
-			-UHAVE_DNLC ${top_srcdir}; \
+			${top_srcdir}; \
 	else \
 		echo "skipping cppcheck because cppcheck is not installed"; \
 	fi

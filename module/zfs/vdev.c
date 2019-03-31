@@ -50,6 +50,7 @@
 #include <sys/zil.h>
 #include <sys/dsl_scan.h>
 #include <sys/abd.h>
+#include <sys/vdev_initialize.h>
 #include <sys/zvol.h>
 #include <sys/zfs_ratelimit.h>
 
@@ -77,14 +78,14 @@ int vdev_validate_skip = B_FALSE;
 int vdev_dtl_sm_blksz = (1 << 12);
 
 /*
- * Rate limit delay events to this many IO delays per second.
+ * Rate limit slow IO (delay) events to this many per second.
  */
-unsigned int zfs_delays_per_second = 20;
+unsigned int zfs_slow_io_events_per_second = 20;
 
 /*
  * Rate limit checksum events after this many checksum errors per second.
  */
-unsigned int zfs_checksums_per_second = 20;
+unsigned int zfs_checksum_events_per_second = 20;
 
 /*
  * Ignore errors during scrub/resilver.  Allows to work around resilver
@@ -98,6 +99,13 @@ int zfs_scan_ignore_errors = 0;
  * (e.g. vdev_obsolete_sm), thus we default their block size to 128K.
  */
 int vdev_standard_sm_blksz = (1 << 17);
+
+/*
+ * Tunable parameter for debugging or performance analysis. Setting this
+ * will cause pool corruption on power loss if a volatile out-of-order
+ * write cache is enabled.
+ */
+int zfs_nocacheflush = 0;
 
 /*PRINTFLIKE2*/
 void
@@ -203,6 +211,14 @@ vdev_getops(const char *type)
 			break;
 
 	return (ops);
+}
+
+/* ARGSUSED */
+void
+vdev_default_xlate(vdev_t *vd, const range_seg_t *in, range_seg_t *res)
+{
+	res->rs_start = in->rs_start;
+	res->rs_end = in->rs_end;
 }
 
 /*
@@ -507,16 +523,23 @@ vdev_alloc_common(spa_t *spa, uint_t id, uint64_t guid, vdev_ops_t *ops)
 	 * and checksum events so that we don't overwhelm ZED with thousands
 	 * of events when a disk is acting up.
 	 */
-	zfs_ratelimit_init(&vd->vdev_delay_rl, &zfs_delays_per_second, 1);
-	zfs_ratelimit_init(&vd->vdev_checksum_rl, &zfs_checksums_per_second, 1);
+	zfs_ratelimit_init(&vd->vdev_delay_rl, &zfs_slow_io_events_per_second,
+	    1);
+	zfs_ratelimit_init(&vd->vdev_checksum_rl,
+	    &zfs_checksum_events_per_second, 1);
 
 	list_link_init(&vd->vdev_config_dirty_node);
 	list_link_init(&vd->vdev_state_dirty_node);
+	list_link_init(&vd->vdev_initialize_node);
 	mutex_init(&vd->vdev_dtl_lock, NULL, MUTEX_NOLOCKDEP, NULL);
 	mutex_init(&vd->vdev_stat_lock, NULL, MUTEX_DEFAULT, NULL);
 	mutex_init(&vd->vdev_probe_lock, NULL, MUTEX_DEFAULT, NULL);
 	mutex_init(&vd->vdev_queue_lock, NULL, MUTEX_DEFAULT, NULL);
 	mutex_init(&vd->vdev_scan_io_queue_lock, NULL, MUTEX_DEFAULT, NULL);
+	mutex_init(&vd->vdev_initialize_lock, NULL, MUTEX_DEFAULT, NULL);
+	mutex_init(&vd->vdev_initialize_io_lock, NULL, MUTEX_DEFAULT, NULL);
+	cv_init(&vd->vdev_initialize_cv, NULL, CV_DEFAULT, NULL);
+	cv_init(&vd->vdev_initialize_io_cv, NULL, CV_DEFAULT, NULL);
 
 	for (int t = 0; t < DTL_TYPES; t++) {
 		vd->vdev_dtl[t] = range_tree_create(NULL, NULL);
@@ -790,6 +813,9 @@ vdev_alloc(spa_t *spa, vdev_t **vdp, nvlist_t *nv, vdev_t *parent, uint_t id,
 		(void) nvlist_lookup_uint64(nv, ZPOOL_CONFIG_RESILVER_TXG,
 		    &vd->vdev_resilver_txg);
 
+		if (nvlist_exists(nv, ZPOOL_CONFIG_RESILVER_DEFER))
+			vdev_set_deferred_resilver(spa, vd);
+
 		/*
 		 * In general, when importing a pool we want to ignore the
 		 * persistent fault state, as the diagnosis made on another
@@ -841,6 +867,8 @@ vdev_free(vdev_t *vd)
 	uint64_t t, txg;
 	metaslab_t *msp;
 
+	ASSERT3P(vd->vdev_initialize_thread, ==, NULL);
+
 	/*
 	 * Scan queues are normally destroyed at the end of a scan. If the
 	 * queue exists here, that implies the vdev is being removed while
@@ -883,6 +911,7 @@ vdev_free(vdev_t *vd)
 
 	ASSERT(vd->vdev_child == NULL);
 	ASSERT(vd->vdev_guid_sum == vd->vdev_guid);
+	ASSERT(vd->vdev_initialize_thread == NULL);
 
 	/*
 	 * Discard allocation state.
@@ -963,6 +992,10 @@ vdev_free(vdev_t *vd)
 	mutex_destroy(&vd->vdev_stat_lock);
 	mutex_destroy(&vd->vdev_probe_lock);
 	mutex_destroy(&vd->vdev_scan_io_queue_lock);
+	mutex_destroy(&vd->vdev_initialize_lock);
+	mutex_destroy(&vd->vdev_initialize_io_lock);
+	cv_destroy(&vd->vdev_initialize_io_cv);
+	cv_destroy(&vd->vdev_initialize_cv);
 
 	zfs_ratelimit_fini(&vd->vdev_delay_rl);
 	zfs_ratelimit_fini(&vd->vdev_checksum_rl);
@@ -1816,8 +1849,13 @@ vdev_open(vdev_t *vd)
 	 * since this would just restart the scrub we are already doing.
 	 */
 	if (vd->vdev_ops->vdev_op_leaf && !spa->spa_scrub_reopen &&
-	    vdev_resilver_needed(vd, NULL, NULL))
-		spa_async_request(spa, SPA_ASYNC_RESILVER);
+	    vdev_resilver_needed(vd, NULL, NULL)) {
+		if (dsl_scan_resilvering(spa->spa_dsl_pool) &&
+		    spa_feature_is_enabled(spa, SPA_FEATURE_RESILVER_DEFER))
+			vdev_set_deferred_resilver(spa, vd);
+		else
+			spa_async_request(spa, SPA_ASYNC_RESILVER);
+	}
 
 	return (0);
 }
@@ -2506,6 +2544,9 @@ vdev_dtl_should_excise(vdev_t *vd)
 	if (vd->vdev_state < VDEV_STATE_DEGRADED)
 		return (B_FALSE);
 
+	if (vd->vdev_resilver_deferred)
+		return (B_FALSE);
+
 	if (vd->vdev_resilver_txg == 0 ||
 	    range_tree_is_empty(vd->vdev_dtl[DTL_MISSING]))
 		return (B_TRUE);
@@ -2527,7 +2568,8 @@ vdev_dtl_should_excise(vdev_t *vd)
 }
 
 /*
- * Reassess DTLs after a config change or scrub completion.
+ * Reassess DTLs after a config change or scrub completion. If txg == 0 no
+ * write operations will be issued to the pool.
  */
 void
 vdev_dtl_reassess(vdev_t *vd, uint64_t txg, uint64_t scrub_txg, int scrub_done)
@@ -2610,7 +2652,7 @@ vdev_dtl_reassess(vdev_t *vd, uint64_t txg, uint64_t scrub_txg, int scrub_done)
 		 * DTLs then reset its resilvering flag and dirty
 		 * the top level so that we persist the change.
 		 */
-		if (vd->vdev_resilver_txg != 0 &&
+		if (txg != 0 && vd->vdev_resilver_txg != 0 &&
 		    range_tree_is_empty(vd->vdev_dtl[DTL_MISSING]) &&
 		    range_tree_is_empty(vd->vdev_dtl[DTL_OUTAGE])) {
 			vd->vdev_resilver_txg = 0;
@@ -3146,11 +3188,11 @@ vdev_destroy_spacemaps(vdev_t *vd, dmu_tx_t *tx)
 }
 
 static void
-vdev_remove_empty(vdev_t *vd, uint64_t txg)
+vdev_remove_empty_log(vdev_t *vd, uint64_t txg)
 {
 	spa_t *spa = vd->vdev_spa;
-	dmu_tx_t *tx;
 
+	ASSERT(vd->vdev_islog);
 	ASSERT(vd == vd->vdev_top);
 	ASSERT3U(txg, ==, spa_syncing_txg(spa));
 
@@ -3195,13 +3237,14 @@ vdev_remove_empty(vdev_t *vd, uint64_t txg)
 			ASSERT0(mg->mg_histogram[i]);
 	}
 
-	tx = dmu_tx_create_assigned(spa_get_dsl(spa), txg);
-	vdev_destroy_spacemaps(vd, tx);
+	dmu_tx_t *tx = dmu_tx_create_assigned(spa_get_dsl(spa), txg);
 
-	if (vd->vdev_islog && vd->vdev_top_zap != 0) {
+	vdev_destroy_spacemaps(vd, tx);
+	if (vd->vdev_top_zap != 0) {
 		vdev_destroy_unlink_zap(vd, vd->vdev_top_zap, tx);
 		vd->vdev_top_zap = 0;
 	}
+
 	dmu_tx_commit(tx);
 }
 
@@ -3213,7 +3256,8 @@ vdev_sync_done(vdev_t *vd, uint64_t txg)
 
 	ASSERT(vdev_is_concrete(vd));
 
-	while ((msp = txg_list_remove(&vd->vdev_ms_list, TXG_CLEAN(txg))))
+	while ((msp = txg_list_remove(&vd->vdev_ms_list, TXG_CLEAN(txg)))
+	    != NULL)
 		metaslab_sync_done(msp, txg);
 
 	if (reassess)
@@ -3272,14 +3316,11 @@ vdev_sync(vdev_t *vd, uint64_t txg)
 		vdev_dtl_sync(lvd, txg);
 
 	/*
-	 * Remove the metadata associated with this vdev once it's empty.
-	 * Note that this is typically used for log/cache device removal;
-	 * we don't empty toplevel vdevs when removing them.  But if
-	 * a toplevel happens to be emptied, this is not harmful.
+	 * If this is an empty log device being removed, destroy the
+	 * metadata associated with it.
 	 */
-	if (vd->vdev_stat.vs_alloc == 0 && vd->vdev_removing) {
-		vdev_remove_empty(vd, txg);
-	}
+	if (vd->vdev_islog && vd->vdev_stat.vs_alloc == 0 && vd->vdev_removing)
+		vdev_remove_empty_log(vd, txg);
 
 	(void) txg_list_add(&spa->spa_vdev_txg_list, vd, TXG_CLEAN(txg));
 }
@@ -3440,6 +3481,7 @@ vdev_online(spa_t *spa, uint64_t guid, uint64_t flags, vdev_state_t *newstate)
 		for (pvd = vd; pvd != rvd; pvd = pvd->vdev_parent)
 			pvd->vdev_expanding = !!((flags & ZFS_ONLINE_EXPAND) ||
 			    spa->spa_autoexpand);
+		vd->vdev_expansion_time = gethrestime_sec();
 	}
 
 	vdev_reopen(tvd);
@@ -3465,6 +3507,15 @@ vdev_online(spa_t *spa, uint64_t guid, uint64_t flags, vdev_state_t *newstate)
 			return (spa_vdev_state_exit(spa, vd, ENOTSUP));
 		spa_async_request(spa, SPA_ASYNC_CONFIG_UPDATE);
 	}
+
+	/* Restart initializing if necessary */
+	mutex_enter(&vd->vdev_initialize_lock);
+	if (vdev_writeable(vd) &&
+	    vd->vdev_initialize_thread == NULL &&
+	    vd->vdev_initialize_state == VDEV_INITIALIZE_ACTIVE) {
+		(void) vdev_initialize(vd);
+	}
+	mutex_exit(&vd->vdev_initialize_lock);
 
 	if (wasoffline ||
 	    (oldstate < VDEV_STATE_DEGRADED &&
@@ -3609,6 +3660,7 @@ vdev_clear(spa_t *spa, vdev_t *vd)
 	vd->vdev_stat.vs_read_errors = 0;
 	vd->vdev_stat.vs_write_errors = 0;
 	vd->vdev_stat.vs_checksum_errors = 0;
+	vd->vdev_stat.vs_slow_ios = 0;
 
 	for (int c = 0; c < vd->vdev_children; c++)
 		vdev_clear(spa, vd->vdev_child[c]);
@@ -3646,8 +3698,14 @@ vdev_clear(spa_t *spa, vdev_t *vd)
 		if (vd != rvd && vdev_writeable(vd->vdev_top))
 			vdev_state_dirty(vd->vdev_top);
 
-		if (vd->vdev_aux == NULL && !vdev_is_dead(vd))
-			spa_async_request(spa, SPA_ASYNC_RESILVER);
+		if (vd->vdev_aux == NULL && !vdev_is_dead(vd)) {
+			if (dsl_scan_resilvering(spa->spa_dsl_pool) &&
+			    spa_feature_is_enabled(spa,
+			    SPA_FEATURE_RESILVER_DEFER))
+				vdev_set_deferred_resilver(spa, vd);
+			else
+				spa_async_request(spa, SPA_ASYNC_RESILVER);
+		}
 
 		spa_event_notify(spa, vd, NULL, ESC_ZFS_VDEV_CLEAR);
 	}
@@ -3849,9 +3907,22 @@ vdev_get_stats_ex(vdev_t *vd, vdev_stat_t *vs, vdev_stat_ex_t *vsx)
 		vs->vs_timestamp = gethrtime() - vs->vs_timestamp;
 		vs->vs_state = vd->vdev_state;
 		vs->vs_rsize = vdev_get_min_asize(vd);
-		if (vd->vdev_ops->vdev_op_leaf)
+		if (vd->vdev_ops->vdev_op_leaf) {
 			vs->vs_rsize += VDEV_LABEL_START_SIZE +
 			    VDEV_LABEL_END_SIZE;
+			/*
+			 * Report intializing progress. Since we don't
+			 * have the initializing locks held, this is only
+			 * an estimate (although a fairly accurate one).
+			 */
+			vs->vs_initialize_bytes_done =
+			    vd->vdev_initialize_bytes_done;
+			vs->vs_initialize_bytes_est =
+			    vd->vdev_initialize_bytes_est;
+			vs->vs_initialize_state = vd->vdev_initialize_state;
+			vs->vs_initialize_action_time =
+			    vd->vdev_initialize_action_time;
+		}
 		/*
 		 * Report expandable space on top-level, non-auxillary devices
 		 * only. The expandable space is reported in terms of metaslab
@@ -3868,6 +3939,8 @@ vdev_get_stats_ex(vdev_t *vd, vdev_stat_t *vs, vdev_stat_ex_t *vsx)
 			vs->vs_fragmentation = (vd->vdev_mg != NULL) ?
 			    vd->vdev_mg->mg_fragmentation : 0;
 		}
+		if (vd->vdev_ops->vdev_op_leaf)
+			vs->vs_resilver_deferred = vd->vdev_resilver_deferred;
 	}
 
 	ASSERT(spa_config_held(vd->vdev_spa, SCL_ALL, RW_READER) != 0);
@@ -4611,6 +4684,21 @@ vdev_deadman(vdev_t *vd, char *tag)
 	}
 }
 
+void
+vdev_set_deferred_resilver(spa_t *spa, vdev_t *vd)
+{
+	for (uint64_t i = 0; i < vd->vdev_children; i++)
+		vdev_set_deferred_resilver(spa, vd->vdev_child[i]);
+
+	if (!vd->vdev_ops->vdev_op_leaf || !vdev_writeable(vd) ||
+	    range_tree_is_empty(vd->vdev_dtl[DTL_MISSING])) {
+		return;
+	}
+
+	vd->vdev_resilver_deferred = B_TRUE;
+	spa->spa_resilver_deferred = B_TRUE;
+}
+
 #if defined(_KERNEL)
 EXPORT_SYMBOL(vdev_fault);
 EXPORT_SYMBOL(vdev_degrade);
@@ -4630,12 +4718,12 @@ module_param(vdev_ms_count_limit, int, 0644);
 MODULE_PARM_DESC(vdev_ms_count_limit,
 	"Practical upper limit of total metaslabs per top-level vdev");
 
-module_param(zfs_delays_per_second, uint, 0644);
-MODULE_PARM_DESC(zfs_delays_per_second, "Rate limit delay events to this many "
-	"IO delays per second");
+module_param(zfs_slow_io_events_per_second, uint, 0644);
+MODULE_PARM_DESC(zfs_slow_io_events_per_second,
+	"Rate limit slow IO (delay) events to this many per second");
 
-module_param(zfs_checksums_per_second, uint, 0644);
-	MODULE_PARM_DESC(zfs_checksums_per_second, "Rate limit checksum events "
+module_param(zfs_checksum_events_per_second, uint, 0644);
+MODULE_PARM_DESC(zfs_checksum_events_per_second, "Rate limit checksum events "
 	"to this many checksum errors per second (do not set below zed"
 	"threshold).");
 
@@ -4646,5 +4734,8 @@ MODULE_PARM_DESC(zfs_scan_ignore_errors,
 module_param(vdev_validate_skip, int, 0644);
 MODULE_PARM_DESC(vdev_validate_skip,
 	"Bypass vdev_validate()");
+
+module_param(zfs_nocacheflush, int, 0644);
+MODULE_PARM_DESC(zfs_nocacheflush, "Disable cache flushes");
 /* END CSTYLED */
 #endif

@@ -69,6 +69,7 @@
 #include <fcntl.h>
 #include <libintl.h>
 #include <libnvpair.h>
+#include <libzutil.h>
 #include <limits.h>
 #include <sys/spa.h>
 #include <scsi/scsi.h>
@@ -419,11 +420,16 @@ check_disk(const char *path, blkid_cache cache, int force,
 	char slice_path[MAXPATHLEN];
 	int err = 0;
 	int fd, i;
+	int flags = O_RDONLY|O_DIRECT;
 
 	if (!iswholedisk)
 		return (check_slice(path, cache, force, isspare));
 
-	if ((fd = open(path, O_RDONLY|O_DIRECT|O_EXCL)) < 0) {
+	/* only spares can be shared, other devices require exclusive access */
+	if (!isspare)
+		flags |= O_EXCL;
+
+	if ((fd = open(path, flags)) < 0) {
 		char *value = blkid_get_tag_value(cache, "TYPE", path);
 		(void) fprintf(stderr, gettext("%s is in use and contains "
 		    "a %s filesystem.\n"), path, value ? value : "unknown");
@@ -547,7 +553,7 @@ is_spare(nvlist_t *config, const char *path)
 	uint_t i, nspares;
 	boolean_t inuse;
 
-	if ((fd = open(path, O_RDONLY)) < 0)
+	if ((fd = open(path, O_RDONLY|O_DIRECT)) < 0)
 		return (B_FALSE);
 
 	if (zpool_in_use(g_zfs, fd, &state, &name, &inuse) != 0 ||
@@ -1280,7 +1286,7 @@ make_disks(zpool_handle_t *zhp, nvlist_t *nv)
 		 * symbolic link will be removed, partition table created,
 		 * and then block until udev creates the new link.
 		 */
-		if (!is_exclusive || !is_spare(NULL, udevpath)) {
+		if (!is_exclusive && !is_spare(NULL, udevpath)) {
 			char *devnode = strrchr(devpath, '/') + 1;
 
 			ret = strncmp(udevpath, UDISK_ROOT, strlen(UDISK_ROOT));

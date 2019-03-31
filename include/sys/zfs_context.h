@@ -664,7 +664,6 @@ extern void random_init(void);
 extern void random_fini(void);
 
 struct spa;
-extern void nicenum(uint64_t num, char *buf, size_t);
 extern void show_pool_stats(struct spa *);
 extern int set_global_var(char *arg);
 
@@ -775,6 +774,7 @@ typedef int fstrans_cookie_t;
 extern fstrans_cookie_t spl_fstrans_mark(void);
 extern void spl_fstrans_unmark(fstrans_cookie_t);
 extern int __spl_pf_fstrans_check(void);
+extern int kmem_cache_reap_active(void);
 
 #define	____cacheline_aligned
 

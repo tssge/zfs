@@ -76,9 +76,9 @@ int zfs_dmu_offset_next_sync = 0;
 /*
  * This can be used for testing, to ensure that certain actions happen
  * while in the middle of a remap (which might otherwise complete too
- * quickly).
+ * quickly).  Used by ztest(8).
  */
-int zfs_object_remap_one_indirect_delay_ticks = 0;
+int zfs_object_remap_one_indirect_delay_ms = 0;
 
 const dmu_object_type_info_t dmu_ot[DMU_OT_NUMTYPES] = {
 	{DMU_BSWAP_UINT8,  TRUE,  FALSE, FALSE, "unallocated"		},
@@ -330,13 +330,13 @@ dmu_rm_spill(objset_t *os, uint64_t object, dmu_tx_t *tx)
 }
 
 /*
- * returns ENOENT, EIO, or 0.
+ * Lookup and hold the bonus buffer for the provided dnode.  If the dnode
+ * has not yet been allocated a new bonus dbuf a will be allocated.
+ * Returns ENOENT, EIO, or 0.
  */
-int
-dmu_bonus_hold_impl(objset_t *os, uint64_t object, void *tag, uint32_t flags,
-    dmu_buf_t **dbp)
+int dmu_bonus_hold_by_dnode(dnode_t *dn, void *tag, dmu_buf_t **dbp,
+    uint32_t flags)
 {
-	dnode_t *dn;
 	dmu_buf_impl_t *db;
 	int error;
 	uint32_t db_flags = DB_RF_MUST_SUCCEED;
@@ -345,10 +345,6 @@ dmu_bonus_hold_impl(objset_t *os, uint64_t object, void *tag, uint32_t flags,
 		db_flags |= DB_RF_NOPREFETCH;
 	if (flags & DMU_READ_NO_DECRYPT)
 		db_flags |= DB_RF_NO_DECRYPT;
-
-	error = dnode_hold(os, object, FTAG, &dn);
-	if (error)
-		return (error);
 
 	rw_enter(&dn->dn_struct_rwlock, RW_READER);
 	if (dn->dn_bonus == NULL) {
@@ -372,8 +368,6 @@ dmu_bonus_hold_impl(objset_t *os, uint64_t object, void *tag, uint32_t flags,
 	 */
 	rw_exit(&dn->dn_struct_rwlock);
 
-	dnode_rele(dn, FTAG);
-
 	error = dbuf_read(db, NULL, db_flags);
 	if (error) {
 		dnode_evict_bonus(dn);
@@ -387,9 +381,19 @@ dmu_bonus_hold_impl(objset_t *os, uint64_t object, void *tag, uint32_t flags,
 }
 
 int
-dmu_bonus_hold(objset_t *os, uint64_t obj, void *tag, dmu_buf_t **dbp)
+dmu_bonus_hold(objset_t *os, uint64_t object, void *tag, dmu_buf_t **dbp)
 {
-	return (dmu_bonus_hold_impl(os, obj, tag, DMU_READ_NO_PREFETCH, dbp));
+	dnode_t *dn;
+	int error;
+
+	error = dnode_hold(os, object, FTAG, &dn);
+	if (error)
+		return (error);
+
+	error = dmu_bonus_hold_by_dnode(dn, tag, dbp, DMU_READ_NO_PREFETCH);
+	dnode_rele(dn, FTAG);
+
+	return (error);
 }
 
 /*
@@ -1083,6 +1087,7 @@ dmu_object_remap_one_indirect(objset_t *os, dnode_t *dn,
     uint64_t last_removal_txg, uint64_t offset)
 {
 	uint64_t l1blkid = dbuf_whichblock(dn, 1, offset);
+	dnode_t *dn_tx;
 	int err = 0;
 
 	rw_enter(&dn->dn_struct_rwlock, RW_READER);
@@ -1101,7 +1106,9 @@ dmu_object_remap_one_indirect(objset_t *os, dnode_t *dn,
 
 	/*
 	 * If this L1 was already written after the last removal, then we've
-	 * already tried to remap it.
+	 * already tried to remap it.  An additional hold is taken after the
+	 * dmu_tx_assign() to handle the case where the dnode is freed while
+	 * waiting for the next open txg.
 	 */
 	if (birth <= last_removal_txg &&
 	    dbuf_read(dbuf, NULL, DB_RF_MUST_SUCCEED) == 0 &&
@@ -1110,7 +1117,11 @@ dmu_object_remap_one_indirect(objset_t *os, dnode_t *dn,
 		dmu_tx_hold_remap_l1indirect(tx, dn->dn_object);
 		err = dmu_tx_assign(tx, TXG_WAIT);
 		if (err == 0) {
-			(void) dbuf_dirty(dbuf, tx);
+			err = dnode_hold(os, dn->dn_object, FTAG, &dn_tx);
+			if (err == 0) {
+				(void) dbuf_dirty(dbuf, tx);
+				dnode_rele(dn_tx, FTAG);
+			}
 			dmu_tx_commit(tx);
 		} else {
 			dmu_tx_abort(tx);
@@ -1119,7 +1130,7 @@ dmu_object_remap_one_indirect(objset_t *os, dnode_t *dn,
 
 	dbuf_rele(dbuf, FTAG);
 
-	delay(zfs_object_remap_one_indirect_delay_ticks);
+	delay(MSEC_TO_TICK(zfs_object_remap_one_indirect_delay_ms));
 
 	return (err);
 }
@@ -1141,7 +1152,7 @@ dmu_object_remap_indirects(objset_t *os, uint64_t object,
 {
 	uint64_t offset, l1span;
 	int err;
-	dnode_t *dn;
+	dnode_t *dn, *dn_tx;
 
 	err = dnode_hold(os, object, FTAG, &dn);
 	if (err != 0) {
@@ -1156,13 +1167,20 @@ dmu_object_remap_indirects(objset_t *os, uint64_t object,
 		/*
 		 * If the dnode has no indirect blocks, we cannot dirty them.
 		 * We still want to remap the blkptr(s) in the dnode if
-		 * appropriate, so mark it as dirty.
+		 * appropriate, so mark it as dirty.  An additional hold is
+		 * taken after the dmu_tx_assign() to handle the case where
+		 * the dnode is freed while waiting for the next open txg.
 		 */
 		if (err == 0 && dnode_needs_remap(dn)) {
 			dmu_tx_t *tx = dmu_tx_create(os);
-			dmu_tx_hold_bonus(tx, dn->dn_object);
-			if ((err = dmu_tx_assign(tx, TXG_WAIT)) == 0) {
-				dnode_setdirty(dn, tx);
+			dmu_tx_hold_bonus(tx, object);
+			err = dmu_tx_assign(tx, TXG_WAIT);
+			if (err == 0) {
+				err = dnode_hold(os, object, FTAG, &dn_tx);
+				if (err == 0) {
+					dnode_setdirty(dn_tx, tx);
+					dnode_rele(dn_tx, FTAG);
+				}
 				dmu_tx_commit(tx);
 			} else {
 				dmu_tx_abort(tx);
@@ -1769,6 +1787,15 @@ dmu_sync_done(zio_t *zio, arc_buf_t *buf, void *varg)
 	dmu_sync_arg_t *dsa = varg;
 	dbuf_dirty_record_t *dr = dsa->dsa_dr;
 	dmu_buf_impl_t *db = dr->dr_dbuf;
+	zgd_t *zgd = dsa->dsa_zgd;
+
+	/*
+	 * Record the vdev(s) backing this blkptr so they can be flushed after
+	 * the writes for the lwb have completed.
+	 */
+	if (zio->io_error == 0) {
+		zil_lwb_add_block(zgd->zgd_lwb, zgd->zgd_bp);
+	}
 
 	mutex_enter(&db->db_mtx);
 	ASSERT(dr->dt.dl.dr_override_state == DR_IN_DMU_SYNC);
@@ -1818,14 +1845,23 @@ dmu_sync_late_arrival_done(zio_t *zio)
 {
 	blkptr_t *bp = zio->io_bp;
 	dmu_sync_arg_t *dsa = zio->io_private;
-	ASSERTV(blkptr_t *bp_orig = &zio->io_bp_orig);
+	zgd_t *zgd = dsa->dsa_zgd;
 
-	if (zio->io_error == 0 && !BP_IS_HOLE(bp)) {
-		ASSERT(!(zio->io_flags & ZIO_FLAG_NOPWRITE));
-		ASSERT(BP_IS_HOLE(bp_orig) || !BP_EQUAL(bp, bp_orig));
-		ASSERT(zio->io_bp->blk_birth == zio->io_txg);
-		ASSERT(zio->io_txg > spa_syncing_txg(zio->io_spa));
-		zio_free(zio->io_spa, zio->io_txg, zio->io_bp);
+	if (zio->io_error == 0) {
+		/*
+		 * Record the vdev(s) backing this blkptr so they can be
+		 * flushed after the writes for the lwb have completed.
+		 */
+		zil_lwb_add_block(zgd->zgd_lwb, zgd->zgd_bp);
+
+		if (!BP_IS_HOLE(bp)) {
+			ASSERTV(blkptr_t *bp_orig = &zio->io_bp_orig);
+			ASSERT(!(zio->io_flags & ZIO_FLAG_NOPWRITE));
+			ASSERT(BP_IS_HOLE(bp_orig) || !BP_EQUAL(bp, bp_orig));
+			ASSERT(zio->io_bp->blk_birth == zio->io_txg);
+			ASSERT(zio->io_txg > spa_syncing_txg(zio->io_spa));
+			zio_free(zio->io_spa, zio->io_txg, zio->io_bp);
+		}
 	}
 
 	dmu_tx_commit(dsa->dsa_tx);
@@ -2527,6 +2563,7 @@ dmu_fini(void)
 
 #if defined(_KERNEL)
 EXPORT_SYMBOL(dmu_bonus_hold);
+EXPORT_SYMBOL(dmu_bonus_hold_by_dnode);
 EXPORT_SYMBOL(dmu_buf_hold_array_by_bonus);
 EXPORT_SYMBOL(dmu_buf_rele_array);
 EXPORT_SYMBOL(dmu_prefetch);

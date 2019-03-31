@@ -27,7 +27,7 @@
 .\" Copyright 2017 Nexenta Systems, Inc.
 .\" Copyright (c) 2017 Open-E, Inc. All Rights Reserved.
 .\"
-.Dd April 27, 2018
+.Dd November 29, 2018
 .Dt ZPOOL 8 SMM
 .Os Linux
 .Sh NAME
@@ -115,6 +115,11 @@
 .Ar pool Ns | Ns Ar id
 .Op Ar newpool Oo Fl t Oc
 .Nm
+.Cm initialize
+.Op Fl c | Fl s
+.Ar pool
+.Op Ar device Ns ...
+.Nm
 .Cm iostat
 .Op Oo Oo Fl c Ar SCRIPT Oc Oo Fl lq Oc Oc Ns | Ns Fl rw
 .Op Fl T Sy u Ns | Ns Sy d
@@ -162,6 +167,9 @@
 .Oo Fl o Ar property Ns = Ns Ar value Oc
 .Ar pool Ar device Op Ar new_device
 .Nm
+.Cm resilver
+.Ar pool Ns ...
+.Nm
 .Cm scrub
 .Op Fl s | Fl p
 .Ar pool Ns ...
@@ -179,7 +187,7 @@
 .Nm
 .Cm status
 .Oo Fl c Ar SCRIPT Oc
-.Op Fl gLPvxD
+.Op Fl DigLpPsvx
 .Op Fl T Sy u Ns | Ns Sy d
 .Oo Ar pool Oc Ns ...
 .Op Ar interval Op Ar count
@@ -1594,6 +1602,32 @@ Will also set -o cachefile=none when not explicitly specified.
 .El
 .It Xo
 .Nm
+.Cm initialize
+.Op Fl c | Fl s
+.Ar pool
+.Op Ar device Ns ...
+.Xc
+Begins initializing by writing to all unallocated regions on the specified
+devices, or all eligible devices in the pool if no individual devices are
+specified.
+Only leaf data or log devices may be initialized.
+.Bl -tag -width Ds
+.It Fl c, -cancel
+Cancel initializing on the specified devices, or all eligible devices if none
+are specified.
+If one or more target devices are invalid or are not currently being
+initialized, the command will fail and no cancellation will occur on any device.
+.It Fl s -suspend
+Suspend initializing on the specified devices, or all eligible devices if none
+are specified.
+If one or more target devices are invalid or are not currently being
+initialized, the command will fail and no suspension will occur on any device.
+Initializing can then be resumed by running
+.Nm zpool Cm initialize
+with no flags on the relevant target devices.
+.El
+.It Xo
+.Nm
 .Cm iostat
 .Op Oo Oo Fl c Ar SCRIPT Oc Oo Fl lq Oc Oc Ns | Ns Fl rw
 .Op Fl T Sy u Ns | Ns Sy d
@@ -1939,8 +1973,9 @@ In this case, the
 command initiates the removal and returns, while the evacuation continues in
 the background.
 The removal progress can be monitored with
-.Nm zpool Cm status.
-The
+.Nm zpool Cm status .
+If an IO error is encountered during the removal process it will be
+cancelled. The
 .Sy device_removal
 feature flag must be enabled to remove a top-level vdev, see
 .Xr zpool-features 5 .
@@ -2069,6 +2104,14 @@ again.
 .El
 .It Xo
 .Nm
+.Cm resilver
+.Ar pool Ns ...
+.Xc
+Starts a resilver. If an existing resilver is already running it will be
+restarted from the beginning. Any drives that were scheduled for a deferred
+resilver will be added to the new one.
+.It Xo
+.Nm
 .Cm set
 .Ar property Ns = Ns Ar value
 .Ar pool
@@ -2156,7 +2199,7 @@ and automatically import it.
 .Nm
 .Cm status
 .Op Fl c Op Ar SCRIPT1 Ns Oo , Ns Ar SCRIPT2 Oc Ns ...
-.Op Fl gLPvxD
+.Op Fl DigLpPsvx
 .Op Fl T Sy u Ns | Ns Sy d
 .Oo Ar pool Oc Ns ...
 .Op Ar interval Op Ar count
@@ -2183,6 +2226,8 @@ output.  See the
 option of
 .Nm zpool Cm iostat
 for complete details.
+.It Fl i
+Display vdev initialization status.
 .It Fl g
 Display vdev GUIDs instead of the normal device names. These GUIDs
 can be used in place of device names for the zpool
@@ -2192,6 +2237,8 @@ Display real paths for vdevs resolving all symbolic links. This can
 be used to look up the current block device name regardless of the
 .Pa /dev/disk/
 path used to open it.
+.It Fl p
+Display numbers in parsable (exact) values.
 .It Fl P
 Display full paths for vdevs instead of only the last component of
 the path. This can be used in conjunction with the
@@ -2203,6 +2250,12 @@ Display a histogram of deduplication statistics, showing the allocated
 and referenced
 .Pq logically referenced in the pool
 block counts and sizes by reference count.
+.It Fl s
+Display the number of leaf VDEV slow IOs.  This is the number of IOs that
+didn't complete in \fBzio_slow_io_ms\fR milliseconds (default 30 seconds).
+This does not necessarily mean the IOs failed to complete, just took an
+unreasonably long amount of time.  This may indicate a problem with the
+underlying storage.
 .It Fl T Sy u Ns | Ns Sy d
 Display a time stamp.
 Specify

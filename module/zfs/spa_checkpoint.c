@@ -393,7 +393,7 @@ spa_checkpoint_discard_thread_check(void *arg, zthr_t *zthr)
 	return (B_TRUE);
 }
 
-int
+void
 spa_checkpoint_discard_thread(void *arg, zthr_t *zthr)
 {
 	spa_t *spa = arg;
@@ -408,7 +408,7 @@ spa_checkpoint_discard_thread(void *arg, zthr_t *zthr)
 			dmu_buf_t **dbp;
 
 			if (zthr_iscancelled(zthr))
-				return (0);
+				return;
 
 			ASSERT3P(vd->vdev_ops, !=, &vdev_indirect_ops);
 
@@ -445,8 +445,6 @@ spa_checkpoint_discard_thread(void *arg, zthr_t *zthr)
 	VERIFY0(dsl_sync_task(spa->spa_name, NULL,
 	    spa_checkpoint_discard_complete_sync, spa,
 	    0, ZFS_SPACE_CHECK_NONE));
-
-	return (0);
 }
 
 
@@ -462,7 +460,7 @@ spa_checkpoint_check(void *arg, dmu_tx_t *tx)
 	if (!spa_top_vdevs_spacemap_addressable(spa))
 		return (SET_ERROR(ZFS_ERR_VDEV_TOO_BIG));
 
-	if (spa->spa_vdev_removal != NULL)
+	if (spa->spa_removing_phys.sr_state == DSS_SCANNING)
 		return (SET_ERROR(ZFS_ERR_DEVRM_IN_PROGRESS));
 
 	if (spa->spa_checkpoint_txg != 0)
