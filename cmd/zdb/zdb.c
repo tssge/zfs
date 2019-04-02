@@ -919,14 +919,7 @@ dump_offset(objset_t *os, metaslab_t *msp, FILE *blockmap_file)
 	space_map_t *sm = msp->ms_sm;
 	unsigned char metaslab_header[SM_METASLAB_HEADER_SIZE];
 	sm_metaslab_header_t mh;
-	FILE* tmp = tmpfile(); 
 
-	if (tmp == NULL) 
-    { 
-		(void) fatal("failed to open tmp file"); 
-    } 
-
-	int a;
 	int c = 64;
 	int entry_size = 17;
 	unsigned char buf[entry_size];
@@ -935,9 +928,13 @@ dump_offset(objset_t *os, metaslab_t *msp, FILE *blockmap_file)
 	if (sm == NULL)
 		return;
 
-	mh.offset = msp->ms_start;
-	mh.index = msp->ms_id;
+	mh.offset = 0;
+	mh.index = 0;
 	mh.numRanges = 0;
+
+	int ms_header_pos = ftell(blockmap_file);
+	memcpy(metaslab_header, &mh, sizeof(metaslab_header));
+	fwrite(&metaslab_header, sizeof(char), sizeof(metaslab_header), blockmap_file);
 	
 	for (offset = 0; offset < space_map_length(sm);
 	    offset += sizeof (entry)) {
@@ -968,19 +965,19 @@ dump_offset(objset_t *os, metaslab_t *msp, FILE *blockmap_file)
 				}
 			}
 
-			fwrite(&buf, sizeof(char), entry_size, tmp);
+			fwrite(&buf, sizeof(char), entry_size, blockmap_file);
 
 			mh.numRanges++;
 		}
 	}
 
-	memcpy(metaslab_header, &mh, sizeof(mh));
-	fwrite(&metaslab_header, sizeof(char), sizeof(mh), blockmap_file);
-	rewind(tmp);
-    while( (a = fgetc(tmp)) != EOF )
-    {
-      fputc(a, blockmap_file);
-    }
+	mh.offset = msp->ms_start;
+	mh.index = msp->ms_id;
+
+	fseek(blockmap_file, ms_header_pos, SEEK_SET);
+	memcpy(metaslab_header, &mh, sizeof(metaslab_header));
+	fwrite(&metaslab_header, sizeof(char), sizeof(metaslab_header), blockmap_file);
+	fseek(blockmap_file, 0, SEEK_END);
 }
 
 
@@ -1198,8 +1195,8 @@ dump_blockmap(spa_t *spa, char *blockmap_file_path)
 			vd = rvd->vdev_child[c];
 
 			gh.numMetaslabs = vd->vdev_ms_count;
-			memcpy(global_header, &gh, sizeof(gh));
-			fwrite(&global_header, sizeof(char), sizeof(gh), blockmap_file);	
+			memcpy(global_header, &gh, sizeof(global_header));
+			fwrite(&global_header, sizeof(char), sizeof(global_header), blockmap_file);	
 
  			for (m = 1; m < zopt_objects; m++) {
 				if (zopt_object[m] < vd->vdev_ms_count)
@@ -1217,8 +1214,8 @@ dump_blockmap(spa_t *spa, char *blockmap_file_path)
 		vd = rvd->vdev_child[c];
 
 		gh.numMetaslabs = vd->vdev_ms_count;
-		memcpy(global_header, &gh, sizeof(gh));
-		fwrite(&global_header, sizeof(char), sizeof(gh), blockmap_file);
+		memcpy(global_header, &gh, sizeof(global_header));
+		fwrite(&global_header, sizeof(char), sizeof(global_header), blockmap_file);
 
  		for (m = 0; m < vd->vdev_ms_count; m++)
 			dump_offsets(vd->vdev_ms[m],
