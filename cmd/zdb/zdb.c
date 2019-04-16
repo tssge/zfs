@@ -1677,6 +1677,79 @@ print_indirect(blkptr_t *bp, const zbookmark_phys_t *zb,
 }
 
 static int
+write_indirect_blocks(spa_t *spa, const dnode_phys_t *dnp,
+    blkptr_t *bp, const zbookmark_phys_t *zb, sm_global_header_t *gh, FILE *blockmap_file)
+{
+	const dva_t *dva = bp->blk_dva;
+	int ndvas = dump_opt['d'] > 5 ? BP_GET_NDVAS(bp) : 1;
+	int c = 64;
+	int entry_size = 16;
+	unsigned char buf[entry_size];
+	int err = 0;
+
+ 	if (bp->blk_birth == 0)
+		return (0);
+	
+	if (BP_IS_EMBEDDED(bp)) {
+		return (0);
+	}
+
+ 	for (int i = 0; i < ndvas; i++){
+		uint64_t entry_off = DVA_GET_OFFSET(&dva[i]) + VDEV_LABEL_START_SIZE;
+		uint64_t entry_run = DVA_GET_ASIZE(&dva[i]);
+
+		for(int i=0; i<entry_size; i++){
+			c -= 8;
+			if (i < 8) {
+				buf[i] = (unsigned char) (entry_off >> c);
+				if (c == 0){
+					c = 64;
+				}
+			} else {
+				buf[i] = (unsigned char) (entry_run >> c);
+			}
+		}
+		
+		gh->numMetaslabs += 1;
+		fwrite(&buf, sizeof(char), entry_size, blockmap_file);
+	}
+
+ 	if (BP_GET_LEVEL(bp) > 0 && !BP_IS_HOLE(bp)) {
+		arc_flags_t flags = ARC_FLAG_WAIT;
+		int i;
+		blkptr_t *cbp;
+		int epb = BP_GET_LSIZE(bp) >> SPA_BLKPTRSHIFT;
+		arc_buf_t *buf;
+		uint64_t fill = 0;
+
+ 		err = arc_read(NULL, spa, bp, arc_getbuf_func, &buf,
+		    ZIO_PRIORITY_ASYNC_READ, ZIO_FLAG_CANFAIL, &flags, zb);
+		if (err)
+			return (err);
+		ASSERT(buf->b_data);
+
+ 		/* recursively visit blocks below this */
+		cbp = buf->b_data;
+		for (i = 0; i < epb; i++, cbp++) {
+			zbookmark_phys_t czb;
+
+ 			SET_BOOKMARK(&czb, zb->zb_objset, zb->zb_object,
+			    zb->zb_level - 1,
+			    zb->zb_blkid * epb + i);
+			err = write_indirect_blocks(spa, dnp, cbp, &czb, gh, blockmap_file);
+			if (err)
+				break;
+			fill += BP_GET_FILL(cbp);
+		}
+		if (!err)
+			ASSERT3U(fill, ==, BP_GET_FILL(bp));
+		arc_buf_destroy(buf, &buf);
+	}
+
+ 	return (err);
+}
+
+static int
 visit_indirect(spa_t *spa, const dnode_phys_t *dnp,
     blkptr_t *bp, const zbookmark_phys_t *zb)
 {
@@ -2600,6 +2673,64 @@ count_ds_mos_objects(dsl_dataset_t *ds)
 
 static const char *objset_types[DMU_OST_NUMTYPES] = {
 	"NONE", "META", "ZPL", "ZVOL", "OTHER", "ANY" };
+
+static void
+dump_file_block(objset_t *os, uint64_t object, sm_global_header_t *gh, FILE *blockmap_file)
+{
+	int error;
+	dnode_t *dn;
+	dmu_object_info_t doi;
+	dmu_buf_t *db = NULL;
+	zbookmark_phys_t czb;
+
+	if (object == 0) {
+		dn = DMU_META_DNODE(os);
+	} else {
+		error = dmu_bonus_hold(os, object, FTAG, &db);
+		if (error)
+			fatal("dmu_bonus_hold(%llu) failed, errno %u",
+				object, error);
+		dn = DB_DNODE((dmu_buf_impl_t *)db);
+	}
+
+	dmu_object_info_from_dnode(dn, &doi);
+
+	dnode_phys_t *dnp = dn->dn_phys;
+
+	SET_BOOKMARK(&czb, dmu_objset_id(dn->dn_objset),
+		dn->dn_object, dnp->dn_nlevels - 1, 0);
+	
+	for (int j = 0; j < dnp->dn_nblkptr; j++) {
+		czb.zb_blkid = j;
+		(void) write_indirect_blocks(dmu_objset_spa(dn->dn_objset), dnp,
+			&dnp->dn_blkptr[j], &czb, gh, blockmap_file);
+	}
+
+	if (db != NULL)
+		dmu_buf_rele(db, FTAG);	
+}
+
+static void
+dump_file_blocks(objset_t *os, char *blockmap_file_path)
+{
+	if (zopt_objects != 0 && dump_opt['d'] >= 5 && blockmap_file_path != NULL) {
+		FILE *blockmap_file = fopen(blockmap_file_path, "wb");
+		sm_global_header_t gh;
+		gh.vdevId = os->os_spa->spa_root_vdev->vdev_id;
+		gh.numMetaslabs = 0;
+
+		write_global_header(&gh, blockmap_file);
+
+		for (int i = 0; i < zopt_objects; i++){
+			dump_file_block(os, zopt_object[i], &gh, blockmap_file);
+		}
+
+		fseek(blockmap_file, 0, SEEK_SET);
+		write_global_header(&gh, blockmap_file);
+		fclose(blockmap_file);
+	}
+
+}
 
 static void
 dump_dir(objset_t *os)
@@ -6437,7 +6568,11 @@ main(int argc, char **argv)
 			}
 		}
 		if (os != NULL) {
-			dump_dir(os);
+			if (blockmap_file_path != NULL){
+				dump_file_blocks(os, blockmap_file_path);
+			} else {
+				dump_dir(os);
+			}
 		} else if (zopt_objects > 0 && !dump_opt['m']) {
 			dump_dir(spa->spa_meta_objset);
 		} else {
