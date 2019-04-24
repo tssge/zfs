@@ -1910,7 +1910,6 @@ zfs_preumount(struct super_block *sb)
 	/* zfsvfs is NULL when zfs_domount fails during mount */
 	if (zfsvfs) {
 		zfsctl_destroy(sb->s_fs_info);
-		generic_shutdown_super(sb);
 		/*
 		 * Wait for iput_async before entering evict_inodes in
 		 * generic_shutdown_super. The reason we must finish before
@@ -1930,6 +1929,9 @@ zfs_preumount(struct super_block *sb)
 		    dmu_objset_pool(zfsvfs->z_os)), 0);
 		taskq_wait_outstanding(dsl_pool_iput_taskq(
 		    dmu_objset_pool(zfsvfs->z_os)), 0);
+
+		/* Call the shutdown of sb after the added xattr entries */
+		generic_shutdown_super(sb);
 	}
 }
 
