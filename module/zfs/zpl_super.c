@@ -147,20 +147,13 @@ zpl_umount_begin(struct super_block *sb)
 {
 	zfsvfs_t *zfsvfs = sb->s_fs_info;
 
-	if (zfsvfs) {
+	if (zfsvfs->z_os) {
 		/* Flush out all POSIX I/Os. */
 		zfsvfs->z_unmounted = B_TRUE;
 		(void) dmu_objset_shutdown_register(zfsvfs->z_os);
 
-		/*
-		 * Wait for users to drop these locks as readers, then evict
-		 * every buffer.
-		 */
 		rrm_enter(&zfsvfs->z_teardown_lock, RW_WRITER, FTAG);
-		rw_enter(&zfsvfs->z_teardown_inactive_lock, RW_WRITER);
-		rw_exit(&zfsvfs->z_teardown_inactive_lock);
 		rrm_exit(&zfsvfs->z_teardown_lock, FTAG);
-		dmu_objset_evict_dbufs(zfsvfs->z_os);
 	}
 }
 
