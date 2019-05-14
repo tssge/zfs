@@ -990,7 +990,7 @@ dump_offset(objset_t *os, metaslab_t *msp, sm_global_header_t *gh, FILE *blockma
 		int entry_type;
 		uint64_t entry_off, entry_run;
 
-		if (!SM_DEBUG_DECODE(entry)) {
+		if (!sm_entry_is_debug(entry)) {
 			entry_type = (SM_TYPE_DECODE(entry) == SM_ALLOC) ? 1 : 0;
 			entry_off = (SM_OFFSET_DECODE(entry) << mapshift) + sm->sm_start;
 			entry_run = SM_RUN_DECODE(entry) << mapshift;
