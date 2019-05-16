@@ -22,6 +22,7 @@
 /*
  * Copyright (c) 2000, 2010, Oracle and/or its affiliates. All rights reserved.
  * Copyright (c) 2015, 2017 by Delphix. All rights reserved.
+ * Copyright 2018 RackTop Systems.
  */
 
 #include <sys/debug.h>
@@ -470,7 +471,7 @@ nvt_remove_nvpair(nvlist_t *nvl, nvpair_t *nvp)
 
 	for (i_nvp_t *prev = NULL, *e = bucket;
 	    e != NULL; prev = e, e = e->nvi_hashtable_next) {
-		if (nvt_nvpair_match(&e->nvi_nvp, nvp, nvl->nvl_flag)) {
+		if (nvt_nvpair_match(&e->nvi_nvp, nvp, nvl->nvl_nvflag)) {
 			if (prev != NULL) {
 				prev->nvi_hashtable_next =
 				    e->nvi_hashtable_next;
@@ -2713,7 +2714,8 @@ nvlist_xunpack(char *buf, size_t buflen, nvlist_t **nvlp, nv_alloc_t *nva)
 	if ((err = nvlist_xalloc(&nvl, 0, nva)) != 0)
 		return (err);
 
-	if ((err = nvlist_common(nvl, buf, &buflen, 0, NVS_OP_DECODE)) != 0)
+	if ((err = nvlist_common(nvl, buf, &buflen, NV_ENCODE_NATIVE,
+	    NVS_OP_DECODE)) != 0)
 		nvlist_free(nvl);
 	else
 		*nvlp = nvl;

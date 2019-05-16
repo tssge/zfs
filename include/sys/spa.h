@@ -971,6 +971,15 @@ typedef enum {
 	SCL_FLAG_NOSUSPEND	= 1U << 1,
 } spa_config_flag_t;
 
+extern void spa_import_progress_add(spa_t *spa);
+extern void spa_import_progress_remove(uint64_t spa_guid);
+extern int spa_import_progress_set_mmp_check(uint64_t pool_guid,
+    uint64_t mmp_sec_remaining);
+extern int spa_import_progress_set_max_txg(uint64_t pool_guid,
+    uint64_t max_txg);
+extern int spa_import_progress_set_state(uint64_t pool_guid,
+    spa_load_state_t spa_load_state);
+
 /* Pool configuration locks */
 extern int _spa_config_tryenter(spa_t *spa, int locks, void *tag, krw_t rw,
     const char *file, size_t line);

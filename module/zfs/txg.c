@@ -244,11 +244,17 @@ txg_thread_wait(tx_state_t *tx, callb_cpr_t *cpr, kcondvar_t *cv, clock_t time)
 {
 	CALLB_CPR_SAFE_BEGIN(cpr);
 
-	if (time)
+	/*
+	 * cv_wait_sig() is used instead of cv_wait() in order to prevent
+	 * this process from incorrectly contributing to the system load
+	 * average when idle.
+	 */
+	if (time) {
 		(void) cv_timedwait_sig(cv, &tx->tx_sync_lock,
 		    ddi_get_lbolt() + time);
-	else
+	} else {
 		cv_wait_sig(cv, &tx->tx_sync_lock);
+	}
 
 	CALLB_CPR_SAFE_END(cpr, &tx->tx_sync_lock);
 }
@@ -720,6 +726,7 @@ txg_wait_synced_tx(dsl_pool_t *dp, uint64_t txg, dmu_tx_t *tx,
 		    "tx_synced=%llu waiting=%llu dp=%p\n",
 		    dp_tx->tx_synced_txg, dp_tx->tx_sync_txg_waiting, dp);
 		cv_broadcast(&dp_tx->tx_sync_more_cv);
+		cv_wait_io(&dp_tx->tx_sync_done_cv, &dp_tx->tx_sync_lock);
 		/*
 		 * If we are suspended and exiting, give up, because our
 		 * data isn't going to be pushed.
@@ -766,7 +773,17 @@ txg_wait_open(dsl_pool_t *dp, uint64_t txg, boolean_t should_quiesce)
 	    txg, tx->tx_quiesce_txg_waiting, tx->tx_sync_txg_waiting);
 	while (tx->tx_open_txg < txg) {
 		cv_broadcast(&tx->tx_quiesce_more_cv);
-		cv_wait(&tx->tx_quiesce_done_cv, &tx->tx_sync_lock);
+		/*
+		 * Callers setting should_quiesce will use cv_wait_io() and
+		 * be accounted for as iowait time.  Otherwise, the caller is
+		 * understood to be idle and cv_wait_sig() is used to prevent
+		 * incorrectly inflating the system load average.
+		 */
+		if (should_quiesce == B_TRUE) {
+			cv_wait_io(&tx->tx_quiesce_done_cv, &tx->tx_sync_lock);
+		} else {
+			cv_wait_sig(&tx->tx_quiesce_done_cv, &tx->tx_sync_lock);
+		}
 	}
 	mutex_exit(&tx->tx_sync_lock);
 }

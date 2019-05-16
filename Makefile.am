@@ -22,6 +22,7 @@ AUTOMAKE_OPTIONS = foreign
 EXTRA_DIST  = autogen.sh copy-builtin
 EXTRA_DIST += config/config.awk config/rpm.am config/deb.am config/tgz.am
 EXTRA_DIST += META AUTHORS COPYRIGHT LICENSE NEWS NOTICE README.md
+EXTRA_DIST += CODE_OF_CONDUCT.md
 
 # Include all the extra licensing information for modules
 EXTRA_DIST += module/icp/algs/skein/THIRDPARTYLICENSE module/icp/algs/skein/THIRDPARTYLICENSE.descrip
@@ -75,7 +76,7 @@ install-data-hook:
 	ln -fs zfs.release spl.release
 endif
 
-codecheck: cstyle shellcheck flake8 mancheck testscheck
+codecheck: cstyle shellcheck flake8 mancheck testscheck vcscheck
 
 checkstyle: codecheck commitcheck
 
@@ -116,6 +117,12 @@ testscheck:
 		\( -name '*.cfg' -executable \) | \
 		xargs -r stat -c '%A %n' | \
 		awk '{c++; print} END {if(c>0) exit 1}'
+
+vcscheck:
+	@if git rev-parse --git-dir > /dev/null 2>&1; then \
+		git ls-files . --exclude-standard --others | \
+		awk '{c++; print} END {if(c>0) exit 1}' ; \
+	fi
 
 lint: cppcheck paxcheck
 

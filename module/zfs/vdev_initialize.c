@@ -62,7 +62,7 @@ vdev_initialize_zap_update_sync(void *arg, dmu_tx_t *tx)
 	 * We pass in the guid instead of the vdev_t since the vdev may
 	 * have been freed prior to the sync task being processed. This
 	 * happens when a vdev is detached as we call spa_config_vdev_exit(),
-	 * stop the intializing thread, schedule the sync task, and free
+	 * stop the initializing thread, schedule the sync task, and free
 	 * the vdev. Later when the scheduled sync task is invoked, it would
 	 * find that the vdev has been freed.
 	 */
@@ -314,16 +314,6 @@ vdev_initialize_ranges(vdev_t *vd, abd_t *data)
 }
 
 static void
-vdev_initialize_ms_load(metaslab_t *msp)
-{
-	ASSERT(MUTEX_HELD(&msp->ms_lock));
-
-	metaslab_load_wait(msp);
-	if (!msp->ms_loaded)
-		VERIFY0(metaslab_load(msp));
-}
-
-static void
 vdev_initialize_calculate_progress(vdev_t *vd)
 {
 	ASSERT(spa_config_held(vd->vdev_spa, SCL_CONFIG, RW_READER) ||
@@ -338,7 +328,7 @@ vdev_initialize_calculate_progress(vdev_t *vd)
 		mutex_enter(&msp->ms_lock);
 
 		uint64_t ms_free = msp->ms_size -
-		    space_map_allocated(msp->ms_sm);
+		    metaslab_allocated_space(msp);
 
 		if (vd->vdev_top->vdev_ops == &vdev_raidz_ops)
 			ms_free /= vd->vdev_top->vdev_children;
@@ -370,7 +360,7 @@ vdev_initialize_calculate_progress(vdev_t *vd)
 		 * metaslab. Load it and walk the free tree for more accurate
 		 * progress estimation.
 		 */
-		vdev_initialize_ms_load(msp);
+		VERIFY0(metaslab_load(msp));
 
 		for (range_seg_t *rs = avl_first(&msp->ms_allocatable->rt_root);
 		    rs; rs = AVL_NEXT(&msp->ms_allocatable->rt_root, rs)) {
@@ -506,7 +496,7 @@ vdev_initialize_thread(void *arg)
 		spa_config_exit(spa, SCL_CONFIG, FTAG);
 		metaslab_disable(msp);
 		mutex_enter(&msp->ms_lock);
-		vdev_initialize_ms_load(msp);
+		VERIFY0(metaslab_load(msp));
 
 		range_tree_walk(msp->ms_allocatable, vdev_initialize_range_add,
 		    vd);
@@ -716,7 +706,9 @@ vdev_initialize_restart(vdev_t *vd)
 			/* load progress for reporting, but don't resume */
 			VERIFY0(vdev_initialize_load(vd));
 		} else if (vd->vdev_initialize_state ==
-		    VDEV_INITIALIZE_ACTIVE && vdev_writeable(vd)) {
+		    VDEV_INITIALIZE_ACTIVE && vdev_writeable(vd) &&
+		    !vd->vdev_top->vdev_removing &&
+		    vd->vdev_initialize_thread == NULL) {
 			vdev_initialize(vd);
 		}
 

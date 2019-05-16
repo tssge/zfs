@@ -1567,8 +1567,17 @@ dbuf_read(dmu_buf_impl_t *db, zio_t *zio, uint32_t flags)
 		DB_DNODE_EXIT(db);
 		DBUF_STAT_BUMP(hash_misses);
 
-		if (!err && need_wait)
-			err = zio_wait(zio);
+		/*
+		 * If we created a zio_root we must execute it to avoid
+		 * leaking it, even if it isn't attached to any work due
+		 * to an error in dbuf_read_impl().
+		 */
+		if (need_wait) {
+			if (err == 0)
+				err = zio_wait(zio);
+			else
+				VERIFY0(zio_wait(zio));
+		}
 	} else {
 		/*
 		 * Another reader came in while the dbuf was in flight
@@ -2109,7 +2118,8 @@ dbuf_dirty(dmu_buf_impl_t *db, dmu_tx_t *tx)
 	if (db->db_level == 0) {
 		ASSERT(!db->db_objset->os_raw_receive ||
 		    dn->dn_maxblkid >= db->db_blkid);
-		dnode_new_blkid(dn, db->db_blkid, tx, drop_struct_lock);
+		dnode_new_blkid(dn, db->db_blkid, tx,
+		    drop_struct_lock, B_FALSE);
 		ASSERT(dn->dn_maxblkid >= db->db_blkid);
 	}
 
@@ -2304,6 +2314,23 @@ dmu_buf_will_dirty(dmu_buf_t *db_fake, dmu_tx_t *tx)
 	    DB_RF_MUST_SUCCEED | DB_RF_NOPREFETCH, tx);
 }
 
+boolean_t
+dmu_buf_is_dirty(dmu_buf_t *db_fake, dmu_tx_t *tx)
+{
+	dmu_buf_impl_t *db = (dmu_buf_impl_t *)db_fake;
+
+	mutex_enter(&db->db_mtx);
+	for (dbuf_dirty_record_t *dr = db->db_last_dirty;
+	    dr != NULL && dr->dr_txg >= tx->tx_txg; dr = dr->dr_next) {
+		if (dr->dr_txg == tx->tx_txg) {
+			mutex_exit(&db->db_mtx);
+			return (B_TRUE);
+		}
+	}
+	mutex_exit(&db->db_mtx);
+	return (B_FALSE);
+}
+
 void
 dmu_buf_will_not_fill(dmu_buf_t *db_fake, dmu_tx_t *tx)
 {
@@ -2441,7 +2468,7 @@ dbuf_assign_arcbuf(dmu_buf_impl_t *db, arc_buf_t *buf, dmu_tx_t *tx)
 	ASSERT(db->db_level == 0);
 	ASSERT3U(dbuf_is_metadata(db), ==, arc_is_metadata(buf));
 	ASSERT(buf != NULL);
-	ASSERT(arc_buf_lsize(buf) == db->db.db_size);
+	ASSERT3U(arc_buf_lsize(buf), ==, db->db.db_size);
 	ASSERT(tx->tx_txg != 0);
 
 	arc_return_buf(buf, db);
@@ -2879,6 +2906,12 @@ dbuf_prefetch_indirect_done(zio_t *zio, const zbookmark_phys_t *zb,
 		    dpa->dpa_zb.zb_level));
 		dmu_buf_impl_t *db = dbuf_hold_level(dpa->dpa_dnode,
 		    dpa->dpa_curlevel, curblkid, FTAG);
+		if (db == NULL) {
+			kmem_free(dpa, sizeof (*dpa));
+			arc_buf_destroy(abuf, private);
+			return;
+		}
+
 		(void) dbuf_read(db, NULL,
 		    DB_RF_MUST_SUCCEED | DB_RF_NOPREFETCH | DB_RF_HAVESTRUCT);
 		dbuf_rele(db, FTAG);
@@ -3928,7 +3961,7 @@ dbuf_sync_leaf(dbuf_dirty_record_t *dr, dmu_tx_t *tx)
 
 	ASSERT(!list_link_active(&dr->dr_dirty_node));
 	if (dn->dn_object == DMU_META_DNODE_OBJECT) {
-		list_insert_tail(&dn->dn_dirty_records[txg&TXG_MASK], dr);
+		list_insert_tail(&dn->dn_dirty_records[txg & TXG_MASK], dr);
 		DB_DNODE_EXIT(db);
 	} else {
 		/*
@@ -4557,6 +4590,7 @@ EXPORT_SYMBOL(dbuf_release_bp);
 EXPORT_SYMBOL(dbuf_dirty);
 EXPORT_SYMBOL(dmu_buf_set_crypt_params);
 EXPORT_SYMBOL(dmu_buf_will_dirty);
+EXPORT_SYMBOL(dmu_buf_is_dirty);
 EXPORT_SYMBOL(dmu_buf_will_not_fill);
 EXPORT_SYMBOL(dmu_buf_will_fill);
 EXPORT_SYMBOL(dmu_buf_fill_done);

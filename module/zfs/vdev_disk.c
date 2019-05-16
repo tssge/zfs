@@ -23,7 +23,7 @@
  * Produced at Lawrence Livermore National Laboratory (cf, DISCLAIMER).
  * Rewritten for Linux by Brian Behlendorf <behlendorf1@llnl.gov>.
  * LLNL-CODE-403049.
- * Copyright (c) 2012, 2018 by Delphix. All rights reserved.
+ * Copyright (c) 2012, 2019 by Delphix. All rights reserved.
  */
 
 #include <sys/zfs_context.h>
@@ -36,6 +36,7 @@
 #include <sys/zio.h>
 #include <linux/mod_compat.h>
 #include <linux/msdos_fs.h>
+#include <linux/vfs_compat.h>
 
 char *zfs_vdev_scheduler = VDEV_SCHEDULER;
 static void *zfs_vdev_holder = VDEV_HOLDER;
@@ -55,7 +56,7 @@ typedef struct dio_request {
 } dio_request_t;
 
 
-#ifdef HAVE_OPEN_BDEV_EXCLUSIVE
+#if defined(HAVE_OPEN_BDEV_EXCLUSIVE) || defined(HAVE_BLKDEV_GET_BY_PATH)
 static fmode_t
 vdev_bdev_mode(int smode)
 {
@@ -80,7 +81,7 @@ vdev_bdev_mode(int smode)
 	ASSERT3S(smode & (FREAD | FWRITE), !=, 0);
 
 	if ((smode & FREAD) && !(smode & FWRITE))
-		mode = MS_RDONLY;
+		mode = SB_RDONLY;
 
 	return (mode);
 }
@@ -108,6 +109,10 @@ bdev_capacity(struct block_device *bdev)
  * case, and updating the partition table if appropriate.  Once the partition
  * size has been increased the additional capacity will be visible using
  * bdev_capacity().
+ *
+ * The returned maximum expansion capacity is always expected to be larger, or
+ * at the very least equal, to its usable capacity to prevent overestimating
+ * the pool expandsize.
  */
 static uint64_t
 bdev_max_capacity(struct block_device *bdev, uint64_t wholedisk)
@@ -122,14 +127,17 @@ bdev_max_capacity(struct block_device *bdev, uint64_t wholedisk)
 		 * alignment restrictions.  Over reporting this value isn't
 		 * harmful and would only result in slightly less capacity
 		 * than expected post expansion.
+		 * The estimated available space may be slightly smaller than
+		 * bdev_capacity() for devices where the number of sectors is
+		 * not a multiple of the alignment size and the partition layout
+		 * is keeping less than PARTITION_END_ALIGNMENT bytes after the
+		 * "reserved" EFI partition: in such cases return the device
+		 * usable capacity.
 		 */
 		available = i_size_read(bdev->bd_contains->bd_inode) -
 		    ((EFI_MIN_RESV_SIZE + NEW_START_BLOCK +
 		    PARTITION_END_ALIGNMENT) << SECTOR_BITS);
-		if (available > 0)
-			psize = available;
-		else
-			psize = bdev_capacity(bdev);
+		psize = MAX(available, bdev_capacity(bdev));
 	} else {
 		psize = bdev_capacity(bdev);
 	}
@@ -521,13 +529,37 @@ vdev_submit_bio_impl(struct bio *bio)
 #endif
 }
 
-#ifndef HAVE_BIO_SET_DEV
+#ifdef HAVE_BIO_SET_DEV
+#if defined(CONFIG_BLK_CGROUP) && defined(HAVE_BIO_SET_DEV_GPL_ONLY)
+/*
+ * The Linux 5.0 kernel updated the bio_set_dev() macro so it calls the
+ * GPL-only bio_associate_blkg() symbol thus inadvertently converting
+ * the entire macro.  Provide a minimal version which always assigns the
+ * request queue's root_blkg to the bio.
+ */
+static inline void
+vdev_bio_associate_blkg(struct bio *bio)
+{
+	struct request_queue *q = bio->bi_disk->queue;
+
+	ASSERT3P(q, !=, NULL);
+	ASSERT3P(bio->bi_blkg, ==, NULL);
+
+	if (blkg_tryget(q->root_blkg))
+		bio->bi_blkg = q->root_blkg;
+}
+#define	bio_associate_blkg vdev_bio_associate_blkg
+#endif
+#else
+/*
+ * Provide a bio_set_dev() helper macro for pre-Linux 4.14 kernels.
+ */
 static inline void
 bio_set_dev(struct bio *bio, struct block_device *bdev)
 {
 	bio->bi_bdev = bdev;
 }
-#endif /* !HAVE_BIO_SET_DEV */
+#endif /* HAVE_BIO_SET_DEV */
 
 static inline void
 vdev_submit_bio(struct bio *bio)

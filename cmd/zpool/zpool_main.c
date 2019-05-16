@@ -115,6 +115,8 @@ static int zpool_do_set(int, char **);
 
 static int zpool_do_sync(int, char **);
 
+static int zpool_do_version(int, char **);
+
 /*
  * These libumem hooks provide a reasonable set of defaults for the allocator's
  * debugging facilities.
@@ -164,7 +166,8 @@ typedef enum {
 	HELP_SPLIT,
 	HELP_SYNC,
 	HELP_REGUID,
-	HELP_REOPEN
+	HELP_REOPEN,
+	HELP_VERSION
 } zpool_help_t;
 
 
@@ -263,6 +266,8 @@ typedef struct zpool_command {
  * the generic usage message.
  */
 static zpool_command_t command_table[] = {
+	{ "version",	zpool_do_version,	HELP_VERSION		},
+	{ NULL },
 	{ "create",	zpool_do_create,	HELP_CREATE		},
 	{ "destroy",	zpool_do_destroy,	HELP_DESTROY		},
 	{ NULL },
@@ -353,7 +358,7 @@ get_usage(zpool_help_t idx)
 		return (gettext("\tiostat [[[-c [script1,script2,...]"
 		    "[-lq]]|[-rw]] [-T d | u] [-ghHLpPvy]\n"
 		    "\t    [[pool ...]|[pool vdev ...]|[vdev ...]]"
-		    " [interval [count]]\n"));
+		    " [[-n] interval [count]]\n"));
 	case HELP_LABELCLEAR:
 		return (gettext("\tlabelclear [-f] <vdev>\n"));
 	case HELP_LIST:
@@ -404,6 +409,8 @@ get_usage(zpool_help_t idx)
 		return (gettext("\treguid <pool>\n"));
 	case HELP_SYNC:
 		return (gettext("\tsync [pool] ...\n"));
+	case HELP_VERSION:
+		return (gettext("\tversion\n"));
 	}
 
 	abort();
@@ -1127,13 +1134,18 @@ zpool_do_labelclear(int argc, char **argv)
 		return (1);
 	}
 
-	if (ioctl(fd, BLKFLSBUF) != 0)
+	/*
+	 * Flush all dirty pages for the block device.  This should not be
+	 * fatal when the device does not support BLKFLSBUF as would be the
+	 * case for a file vdev.
+	 */
+	if ((ioctl(fd, BLKFLSBUF) != 0) && (errno != ENOTTY))
 		(void) fprintf(stderr, gettext("failed to invalidate "
 		    "cache for %s: %s\n"), vdev, strerror(errno));
 
-	if (zpool_read_label(fd, &config, NULL) != 0 || config == NULL) {
+	if (zpool_read_label(fd, &config, NULL) != 0) {
 		(void) fprintf(stderr,
-		    gettext("failed to check state for %s\n"), vdev);
+		    gettext("failed to read label from %s\n"), vdev);
 		ret = 1;
 		goto errout;
 	}
@@ -2554,6 +2566,21 @@ show_import(nvlist_t *config)
 				    "old ones.\n"));
 				break;
 
+			case ZPOOL_ERRATA_ZOL_8308_ENCRYPTION:
+				(void) printf(gettext(" action: Existing "
+				    "encrypted snapshots and bookmarks contain "
+				    "an on-disk\n\tincompatibility. This may "
+				    "cause on-disk corruption if they are used"
+				    "\n\twith 'zfs recv'. To correct the "
+				    "issue, enable the bookmark_v2 feature.\n\t"
+				    "No additional action is needed if there "
+				    "are no encrypted snapshots or\n\t"
+				    "bookmarks. If preserving the encrypted "
+				    "snapshots and bookmarks is\n\trequired, "
+				    "use a non-raw send to backup and restore "
+				    "them. Alternately,\n\tthey may be removed"
+				    " to resolve the incompatibility.\n"));
+				break;
 			default:
 				/*
 				 * All errata must contain an action message.
@@ -5003,6 +5030,7 @@ get_namewidth_iostat(zpool_handle_t *zhp, void *data)
  *	-w	Display latency histograms
  *	-r	Display request size histogram
  *	-T	Display a timestamp in date(1) or Unix format
+ *	-n	Only print headers once
  *
  * This command can be tricky because we want to be able to deal with pool
  * creation/destruction as well as vdev configuration changes.  The bulk of this
@@ -5018,6 +5046,8 @@ zpool_do_iostat(int argc, char **argv)
 	int npools;
 	float interval = 0;
 	unsigned long count = 0;
+	struct winsize win;
+	int winheight = 24;
 	zpool_list_t *list;
 	boolean_t verbose = B_FALSE;
 	boolean_t latency = B_FALSE, l_histo = B_FALSE, rq_histo = B_FALSE;
@@ -5026,6 +5056,7 @@ zpool_do_iostat(int argc, char **argv)
 	boolean_t guid = B_FALSE;
 	boolean_t follow_links = B_FALSE;
 	boolean_t full_name = B_FALSE;
+	boolean_t headers_once = B_FALSE;
 	iostat_cbdata_t cb = { 0 };
 	char *cmd = NULL;
 
@@ -5036,7 +5067,7 @@ zpool_do_iostat(int argc, char **argv)
 	uint64_t unsupported_flags;
 
 	/* check options */
-	while ((c = getopt(argc, argv, "c:gLPT:vyhplqrwH")) != -1) {
+	while ((c = getopt(argc, argv, "c:gLPT:vyhplqrwnH")) != -1) {
 		switch (c) {
 		case 'c':
 			if (cmd != NULL) {
@@ -5098,6 +5129,9 @@ zpool_do_iostat(int argc, char **argv)
 			break;
 		case 'y':
 			omit_since_boot = B_TRUE;
+			break;
+		case 'n':
+			headers_once = B_TRUE;
 			break;
 		case 'h':
 			usage(B_FALSE);
@@ -5301,6 +5335,26 @@ zpool_do_iostat(int argc, char **argv)
 			}
 
 			/*
+			 * Are we connected to TTY? If not, headers_once
+			 * should be true, to avoid breaking scripts.
+			 */
+			if (isatty(fileno(stdout)) == 0)
+				headers_once = B_TRUE;
+
+			/*
+			 * Check terminal size so we can print headers
+			 * even when terminal window has its height
+			 * changed.
+			 */
+			if (headers_once == B_FALSE) {
+				if (ioctl(1, TIOCGWINSZ, &win) != -1 &&
+				    win.ws_row > 0)
+					winheight = win.ws_row;
+				else
+					headers_once = B_TRUE;
+			}
+
+			/*
 			 * If it's the first time and we're not skipping it,
 			 * or either skip or verbose mode, print the header.
 			 *
@@ -5308,7 +5362,9 @@ zpool_do_iostat(int argc, char **argv)
 			 * every vdev, so skip this for histograms.
 			 */
 			if (((++cb.cb_iteration == 1 && !skip) ||
-			    (skip != verbose)) &&
+			    (skip != verbose) ||
+			    (!headers_once &&
+			    (cb.cb_iteration % winheight) == 0)) &&
 			    (!(cb.cb_flags & IOS_ANYHISTO_M)) &&
 			    !cb.cb_scripted)
 				print_iostat_header(&cb);
@@ -5317,7 +5373,6 @@ zpool_do_iostat(int argc, char **argv)
 				(void) fsleep(interval);
 				continue;
 			}
-
 
 			pool_list_iter(list, B_FALSE, print_iostat, &cb);
 
@@ -6958,7 +7013,7 @@ print_scan_status(pool_scan_stat_t *ps)
 
 	scan_rate = pass_scanned / elapsed;
 	issue_rate = pass_issued / elapsed;
-	total_secs_left = (issue_rate != 0) ?
+	total_secs_left = (issue_rate != 0 && total >= issued) ?
 	    ((total - issued) / issue_rate) : UINT64_MAX;
 
 	days_left = total_secs_left / 60 / 60 / 24;
@@ -6992,7 +7047,8 @@ print_scan_status(pool_scan_stat_t *ps)
 	}
 
 	if (pause == 0) {
-		if (issue_rate >= 10 * 1024 * 1024) {
+		if (total_secs_left != UINT64_MAX &&
+		    issue_rate >= 10 * 1024 * 1024) {
 			(void) printf(gettext(", %llu days "
 			    "%02llu:%02llu:%02llu to go\n"),
 			    (u_longlong_t)days_left, (u_longlong_t)hours_left,
@@ -7577,6 +7633,21 @@ status_callback(zpool_handle_t *zhp, void *data)
 			    "encrypted datasets and destroy the old ones. "
 			    "'zfs mount -o ro' can\n\tbe used to temporarily "
 			    "mount existing encrypted datasets readonly.\n"));
+			break;
+
+		case ZPOOL_ERRATA_ZOL_8308_ENCRYPTION:
+			(void) printf(gettext("\tExisting encrypted snapshots "
+			    "and bookmarks contain an on-disk\n\tincompat"
+			    "ibility. This may cause on-disk corruption if "
+			    "they are used\n\twith 'zfs recv'.\n"));
+			(void) printf(gettext("action: To correct the issue, "
+			    "enable the bookmark_v2 feature. No additional\n\t"
+			    "action is needed if there are no encrypted "
+			    "snapshots or bookmarks.\n\tIf preserving the "
+			    "encrypted snapshots and bookmarks is required, "
+			    "use\n\ta non-raw send to backup and restore them. "
+			    "Alternately, they may be\n\tremoved to resolve "
+			    "the incompatibility.\n"));
 			break;
 
 		default:
@@ -9163,6 +9234,18 @@ find_command_idx(char *command, int *idx)
 	return (1);
 }
 
+/*
+ * Display version message
+ */
+static int
+zpool_do_version(int argc, char **argv)
+{
+	if (zfs_version_print() == -1)
+		return (1);
+
+	return (0);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -9192,6 +9275,12 @@ main(int argc, char **argv)
 	 */
 	if ((strcmp(cmdname, "-?") == 0) || strcmp(cmdname, "--help") == 0)
 		usage(B_TRUE);
+
+	/*
+	 * Special case '-V|--version'
+	 */
+	if ((strcmp(cmdname, "-V") == 0) || (strcmp(cmdname, "--version") == 0))
+		return (zpool_do_version(argc, argv));
 
 	if ((g_zfs = libzfs_init()) == NULL) {
 		(void) fprintf(stderr, "%s", libzfs_error_init(errno));

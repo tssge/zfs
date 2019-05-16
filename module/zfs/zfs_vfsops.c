@@ -56,6 +56,7 @@
 #include <sys/dmu_objset.h>
 #include <sys/spa_boot.h>
 #include <sys/zpl.h>
+#include <linux/vfs_compat.h>
 #include "zfs_comutil.h"
 
 enum {
@@ -249,7 +250,7 @@ zfsvfs_parse_options(char *mntopts, vfs_t **vfsp)
 boolean_t
 zfs_is_readonly(zfsvfs_t *zfsvfs)
 {
-	return (!!(zfsvfs->z_sb->s_flags & MS_RDONLY));
+	return (!!(zfsvfs->z_sb->s_flags & SB_RDONLY));
 }
 
 /*ARGSUSED*/
@@ -257,13 +258,6 @@ int
 zfs_sync(struct super_block *sb, int wait, cred_t *cr)
 {
 	zfsvfs_t *zfsvfs = sb->s_fs_info;
-
-	/*
-	 * Data integrity is job one.  We don't want a compromised kernel
-	 * writing to the storage pool, so we never sync during panic.
-	 */
-	if (unlikely(oops_in_progress))
-		return (0);
 
 	/*
 	 * Semantically, the only requirement is that the sync be initiated.
@@ -309,7 +303,21 @@ zfs_sync(struct super_block *sb, int wait, cred_t *cr)
 static void
 atime_changed_cb(void *arg, uint64_t newval)
 {
-	((zfsvfs_t *)arg)->z_atime = newval;
+	zfsvfs_t *zfsvfs = arg;
+	struct super_block *sb = zfsvfs->z_sb;
+
+	if (sb == NULL)
+		return;
+	/*
+	 * Update SB_NOATIME bit in VFS super block.  Since atime update is
+	 * determined by atime_needs_update(), atime_needs_update() needs to
+	 * return false if atime is turned off, and not unconditionally return
+	 * false if atime is turned on.
+	 */
+	if (newval)
+		sb->s_flags &= ~SB_NOATIME;
+	else
+		sb->s_flags |= SB_NOATIME;
 }
 
 static void
@@ -343,15 +351,15 @@ acltype_changed_cb(void *arg, uint64_t newval)
 	switch (newval) {
 	case ZFS_ACLTYPE_OFF:
 		zfsvfs->z_acl_type = ZFS_ACLTYPE_OFF;
-		zfsvfs->z_sb->s_flags &= ~MS_POSIXACL;
+		zfsvfs->z_sb->s_flags &= ~SB_POSIXACL;
 		break;
 	case ZFS_ACLTYPE_POSIXACL:
 #ifdef CONFIG_FS_POSIX_ACL
 		zfsvfs->z_acl_type = ZFS_ACLTYPE_POSIXACL;
-		zfsvfs->z_sb->s_flags |= MS_POSIXACL;
+		zfsvfs->z_sb->s_flags |= SB_POSIXACL;
 #else
 		zfsvfs->z_acl_type = ZFS_ACLTYPE_OFF;
-		zfsvfs->z_sb->s_flags &= ~MS_POSIXACL;
+		zfsvfs->z_sb->s_flags &= ~SB_POSIXACL;
 #endif /* CONFIG_FS_POSIX_ACL */
 		break;
 	default:
@@ -380,9 +388,9 @@ readonly_changed_cb(void *arg, uint64_t newval)
 		return;
 
 	if (newval)
-		sb->s_flags |= MS_RDONLY;
+		sb->s_flags |= SB_RDONLY;
 	else
-		sb->s_flags &= ~MS_RDONLY;
+		sb->s_flags &= ~SB_RDONLY;
 }
 
 static void
@@ -410,9 +418,9 @@ nbmand_changed_cb(void *arg, uint64_t newval)
 		return;
 
 	if (newval == TRUE)
-		sb->s_flags |= MS_MANDLOCK;
+		sb->s_flags |= SB_MANDLOCK;
 	else
-		sb->s_flags &= ~MS_MANDLOCK;
+		sb->s_flags &= ~SB_MANDLOCK;
 }
 
 static void
@@ -994,7 +1002,7 @@ zfsvfs_init(zfsvfs_t *zfsvfs, objset_t *os)
 	    zfs_zpl_version_map(spa_version(dmu_objset_spa(os)))) {
 		(void) printk("Can't mount a version %lld file system "
 		    "on a version %lld pool\n. Pool must be upgraded to mount "
-		    "this file system.", (u_longlong_t)zfsvfs->z_version,
+		    "this file system.\n", (u_longlong_t)zfsvfs->z_version,
 		    (u_longlong_t)spa_version(dmu_objset_spa(os)));
 		return (SET_ERROR(ENOTSUP));
 	}
@@ -1040,14 +1048,6 @@ zfsvfs_init(zfsvfs_t *zfsvfs, objset_t *os)
 		if ((error == 0) && (val == ZFS_XATTR_SA))
 			zfsvfs->z_xattr_sa = B_TRUE;
 	}
-
-	error = sa_setup(os, sa_obj, zfs_attr_table, ZPL_END,
-	    &zfsvfs->z_attr_table);
-	if (error != 0)
-		return (error);
-
-	if (zfsvfs->z_version >= ZPL_VERSION_SA)
-		sa_register_update_callback(os, zfs_sa_upgrade);
 
 	error = zap_lookup(os, MASTER_NODE_OBJ, ZFS_ROOT_OBJ, 8, 1,
 	    &zfsvfs->z_root);
@@ -1122,6 +1122,14 @@ zfsvfs_init(zfsvfs_t *zfsvfs, objset_t *os)
 	else if (error != 0)
 		return (error);
 
+	error = sa_setup(os, sa_obj, zfs_attr_table, ZPL_END,
+	    &zfsvfs->z_attr_table);
+	if (error != 0)
+		return (error);
+
+	if (zfsvfs->z_version >= ZPL_VERSION_SA)
+		sa_register_update_callback(os, zfs_sa_upgrade);
+
 	return (0);
 }
 
@@ -1148,6 +1156,11 @@ zfsvfs_create(const char *osname, boolean_t readonly, zfsvfs_t **zfvp)
 	return (error);
 }
 
+
+/*
+ * Note: zfsvfs is assumed to be malloc'd, and will be freed by this function
+ * on a failure.  Do not pass in a statically allocated zfsvfs.
+ */
 int
 zfsvfs_create_impl(zfsvfs_t **zfvp, zfsvfs_t *zfsvfs, objset_t *os)
 {
@@ -1180,9 +1193,13 @@ zfsvfs_create_impl(zfsvfs_t **zfvp, zfsvfs_t *zfsvfs, objset_t *os)
 	error = zfsvfs_init(zfsvfs, os);
 	if (error != 0) {
 		*zfvp = NULL;
-		kmem_free(zfsvfs, sizeof (zfsvfs_t));
+		zfsvfs_free(zfsvfs);
 		return (error);
 	}
+
+	zfsvfs->z_drain_task = TASKQID_INVALID;
+	zfsvfs->z_draining = B_FALSE;
+	zfsvfs->z_drain_cancel = B_TRUE;
 
 	*zfvp = zfsvfs;
 	return (0);
@@ -1206,14 +1223,27 @@ zfsvfs_setup(zfsvfs_t *zfsvfs, boolean_t mounting)
 	 * operations out since we closed the ZIL.
 	 */
 	if (mounting) {
+		ASSERT3P(zfsvfs->z_kstat.dk_kstats, ==, NULL);
+		dataset_kstats_create(&zfsvfs->z_kstat, zfsvfs->z_os);
+
 		/*
 		 * During replay we remove the read only flag to
 		 * allow replays to succeed.
 		 */
-		if (readonly != 0)
+		if (readonly != 0) {
 			readonly_changed_cb(zfsvfs, B_FALSE);
-		else
+		} else {
+			zap_stats_t zs;
+			if (zap_get_stats(zfsvfs->z_os, zfsvfs->z_unlinkedobj,
+			    &zs) == 0) {
+				dataset_kstats_update_nunlinks_kstat(
+				    &zfsvfs->z_kstat, zs.zs_num_entries);
+			}
+			dprintf_ds(zfsvfs->z_os->os_dsl_dataset,
+			    "num_entries in unlinked set: %llu",
+			    zs.zs_num_entries);
 			zfs_unlinked_drain(zfsvfs);
+		}
 
 		/*
 		 * Parse and replay the intent log.
@@ -1256,9 +1286,6 @@ zfsvfs_setup(zfsvfs_t *zfsvfs, boolean_t mounting)
 		/* restore readonly bit */
 		if (readonly != 0)
 			readonly_changed_cb(zfsvfs, B_TRUE);
-
-		ASSERT3P(zfsvfs->z_kstat.dk_kstats, ==, NULL);
-		dataset_kstats_create(&zfsvfs->z_kstat, zfsvfs->z_os);
 	}
 
 	/*
@@ -1641,6 +1668,8 @@ zfsvfs_teardown(zfsvfs_t *zfsvfs, boolean_t unmounting)
 	kthread_t *killer = NULL;
 	uint64_t wait_flags = 0;
 
+	zfs_unlinked_drain_stop_wait(zfsvfs);
+
 	/*
 	 * If someone has not already unmounted this file system,
 	 * drain the iput_taskq to ensure all active references to the
@@ -1909,6 +1938,7 @@ zfs_preumount(struct super_block *sb)
 
 	/* zfsvfs is NULL when zfs_domount fails during mount */
 	if (zfsvfs) {
+		zfs_unlinked_drain_stop_wait(zfsvfs);
 		zfsctl_destroy(sb->s_fs_info);
 		/*
 		 * Wait for iput_async before entering evict_inodes in
@@ -1983,8 +2013,8 @@ zfs_remount(struct super_block *sb, int *flags, zfs_mnt_t *zm)
 	int error;
 
 	if ((issnap || !spa_writeable(dmu_objset_spa(zfsvfs->z_os))) &&
-	    !(*flags & MS_RDONLY)) {
-		*flags |= MS_RDONLY;
+	    !(*flags & SB_RDONLY)) {
+		*flags |= SB_RDONLY;
 		return (EROFS);
 	}
 
@@ -1992,7 +2022,7 @@ zfs_remount(struct super_block *sb, int *flags, zfs_mnt_t *zm)
 	if (error)
 		return (error);
 
-	if (!zfs_is_readonly(zfsvfs) && (*flags & MS_RDONLY))
+	if (!zfs_is_readonly(zfsvfs) && (*flags & SB_RDONLY))
 		txg_wait_synced(dmu_objset_pool(zfsvfs->z_os), 0);
 
 	zfs_unregister_callbacks(zfsvfs);
@@ -2186,6 +2216,15 @@ zfs_resume_fs(zfsvfs_t *zfsvfs, dsl_dataset_t *ds)
 		}
 	}
 	mutex_exit(&zfsvfs->z_znodes_lock);
+
+	if (!zfs_is_readonly(zfsvfs) && !zfsvfs->z_unmounted) {
+		/*
+		 * zfs_suspend_fs() could have interrupted freeing
+		 * of dnodes. We need to restart this freeing so
+		 * that we don't "leak" the space.
+		 */
+		zfs_unlinked_drain(zfsvfs);
+	}
 
 bail:
 	/* release the VFS ops */

@@ -64,6 +64,8 @@ int zfs_send_corrupt_data = B_FALSE;
 int zfs_send_queue_length = SPA_MAXBLOCKSIZE;
 /* Set this tunable to FALSE to disable setting of DRR_FLAG_FREERECORDS */
 int zfs_send_set_freerecords_bit = B_TRUE;
+/* Set this tunable to FALSE is disable sending unmodified spill blocks. */
+int zfs_send_unmodified_spill_blocks = B_TRUE;
 
 /*
  * Use this to override the recordsize calculation for fast zfs send estimates.
@@ -100,6 +102,8 @@ typedef struct dump_bytes_io {
 } dump_bytes_io_t;
 
 #ifdef _KERNEL
+static int do_dump(dmu_sendarg_t *dsa, struct send_block_record *data);
+
 static void
 dump_bytes_cb(void *arg)
 {
@@ -442,6 +446,12 @@ dump_spill(dmu_sendarg_t *dsp, const blkptr_t *bp, uint64_t object, void *data)
 	drrs->drr_length = blksz;
 	drrs->drr_toguid = dsp->dsa_toguid;
 
+	/* See comment in dump_dnode() for full details */
+	if (zfs_send_unmodified_spill_blocks &&
+	    (bp->blk_birth <= dsp->dsa_fromtxg)) {
+		drrs->drr_flags |= DRR_SPILL_UNMODIFIED;
+	}
+
 	/* handle raw send fields */
 	if (dsp->dsa_featureflags & DMU_BACKUP_FEATURE_RAW) {
 		ASSERT(BP_IS_PROTECTED(bp));
@@ -595,6 +605,14 @@ dump_dnode(dmu_sendarg_t *dsp, const blkptr_t *bp, uint64_t object,
 		}
 	}
 
+	/*
+	 * DRR_OBJECT_SPILL is set for every dnode which references a
+	 * spill block.  This allows the receiving pool to definitively
+	 * determine when a spill block should be kept or freed.
+	 */
+	if (dnp->dn_flags & DNODE_FLAG_SPILL_BLKPTR)
+		drro->drr_flags |= DRR_OBJECT_SPILL;
+
 	if (dump_record(dsp, DN_BONUS(dnp), bonuslen) != 0)
 		return (SET_ERROR(EINTR));
 
@@ -602,8 +620,34 @@ dump_dnode(dmu_sendarg_t *dsp, const blkptr_t *bp, uint64_t object,
 	if (dump_free(dsp, object, (dnp->dn_maxblkid + 1) *
 	    (dnp->dn_datablkszsec << SPA_MINBLOCKSHIFT), DMU_OBJECT_END) != 0)
 		return (SET_ERROR(EINTR));
+
+	/*
+	 * Send DRR_SPILL records for unmodified spill blocks.  This is useful
+	 * because changing certain attributes of the object (e.g. blocksize)
+	 * can cause old versions of ZFS to incorrectly remove a spill block.
+	 * Including these records in the stream forces an up to date version
+	 * to always be written ensuring they're never lost.  Current versions
+	 * of the code which understand the DRR_FLAG_SPILL_BLOCK feature can
+	 * ignore these unmodified spill blocks.
+	 */
+	if (zfs_send_unmodified_spill_blocks &&
+	    (dnp->dn_flags & DNODE_FLAG_SPILL_BLKPTR) &&
+	    (DN_SPILL_BLKPTR(dnp)->blk_birth <= dsp->dsa_fromtxg)) {
+		struct send_block_record record;
+
+		bzero(&record, sizeof (struct send_block_record));
+		record.eos_marker = B_FALSE;
+		record.bp = *DN_SPILL_BLKPTR(dnp);
+		SET_BOOKMARK(&(record.zb), dmu_objset_id(dsp->dsa_os),
+		    object, 0, DMU_SPILL_BLKID);
+
+		if (do_dump(dsp, &record) != 0)
+			return (SET_ERROR(EINTR));
+	}
+
 	if (dsp->dsa_err != 0)
 		return (SET_ERROR(EINTR));
+
 	return (0);
 }
 
@@ -1033,6 +1077,7 @@ dmu_send_init(struct send_thread_arg *to_arg, dsl_pool_t *dp,
 	/* raw send implies compressok */
 	if (compressok || rawok)
 		featureflags |= DMU_BACKUP_FEATURE_COMPRESSED;
+
 	if (rawok && os->os_encrypted)
 		featureflags |= DMU_BACKUP_FEATURE_RAW;
 
@@ -1068,6 +1113,8 @@ dmu_send_init(struct send_thread_arg *to_arg, dsl_pool_t *dp,
 	if (zfs_send_set_freerecords_bit)
 		drr->drr_u.drr_begin.drr_flags |= DRR_FLAG_FREERECORDS;
 
+	drr->drr_u.drr_begin.drr_flags |= DRR_FLAG_SPILL_BLOCK;
+
 	if (ancestor_zb != NULL) {
 		drr->drr_u.drr_begin.drr_fromguid = ancestor_zb->zbm_guid;
 		to_arg->fromtxg = ancestor_zb->zbm_creation_txg;
@@ -1101,9 +1148,13 @@ dmu_send_init(struct send_thread_arg *to_arg, dsl_pool_t *dp,
 		}
 
 		if (featureflags & DMU_BACKUP_FEATURE_RAW) {
+			uint64_t ivset_guid = (ancestor_zb != NULL) ?
+			    ancestor_zb->zbm_ivset_guid : 0;
+
 			ASSERT(os->os_encrypted);
 
-			err = dsl_crypto_populate_key_nvlist(to_ds, &keynvl);
+			err = dsl_crypto_populate_key_nvlist(to_ds,
+			    ivset_guid, &keynvl);
 			if (err != 0) {
 				fnvlist_free(nvl);
 				goto fail;
@@ -1522,4 +1573,8 @@ MODULE_PARM_DESC(zfs_send_corrupt_data, "Allow sending corrupt data");
 
 module_param(zfs_send_queue_length, int, 0644);
 MODULE_PARM_DESC(zfs_send_queue_length, "Maximum send queue length");
+
+module_param(zfs_send_unmodified_spill_blocks, int, 0644);
+MODULE_PARM_DESC(zfs_send_unmodified_spill_blocks,
+	"Send unmodified spill blocks");
 #endif

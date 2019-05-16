@@ -216,23 +216,47 @@ zpl_aio_fsync(struct kiocb *kiocb, int datasync)
 #error "Unsupported fops->fsync() implementation"
 #endif
 
+static inline int
+zfs_io_flags(struct kiocb *kiocb)
+{
+	int flags = 0;
+
+#if defined(IOCB_DSYNC)
+	if (kiocb->ki_flags & IOCB_DSYNC)
+		flags |= FDSYNC;
+#endif
+#if defined(IOCB_SYNC)
+	if (kiocb->ki_flags & IOCB_SYNC)
+		flags |= FSYNC;
+#endif
+#if defined(IOCB_APPEND)
+	if (kiocb->ki_flags & IOCB_APPEND)
+		flags |= FAPPEND;
+#endif
+#if defined(IOCB_DIRECT)
+	if (kiocb->ki_flags & IOCB_DIRECT)
+		flags |= FDIRECT;
+#endif
+	return (flags);
+}
+
 static ssize_t
 zpl_read_common_iovec(struct inode *ip, const struct iovec *iovp, size_t count,
     unsigned long nr_segs, loff_t *ppos, uio_seg_t segment, int flags,
     cred_t *cr, size_t skip)
 {
 	ssize_t read;
-	uio_t uio;
+	uio_t uio = { { 0 }, 0 };
 	int error;
 	fstrans_cookie_t cookie;
 
 	uio.uio_iov = iovp;
-	uio.uio_skip = skip;
-	uio.uio_resid = count;
 	uio.uio_iovcnt = nr_segs;
 	uio.uio_loffset = *ppos;
-	uio.uio_limit = MAXOFFSET_T;
 	uio.uio_segflg = segment;
+	uio.uio_limit = MAXOFFSET_T;
+	uio.uio_resid = count;
+	uio.uio_skip = skip;
 
 	cookie = spl_fstrans_mark();
 	error = -zfs_read(ip, &uio, flags, cr);
@@ -265,14 +289,31 @@ zpl_iter_read_common(struct kiocb *kiocb, const struct iovec *iovp,
 {
 	cred_t *cr = CRED();
 	struct file *filp = kiocb->ki_filp;
+	struct inode *ip = filp->f_mapping->host;
+	zfsvfs_t *zfsvfs = ZTOZSB(ITOZ(ip));
 	ssize_t read;
+	unsigned int f_flags = filp->f_flags;
 
+	f_flags |= zfs_io_flags(kiocb);
 	crhold(cr);
 	read = zpl_read_common_iovec(filp->f_mapping->host, iovp, count,
-	    nr_segs, &kiocb->ki_pos, seg, filp->f_flags, cr, skip);
+	    nr_segs, &kiocb->ki_pos, seg, f_flags, cr, skip);
 	crfree(cr);
 
-	file_accessed(filp);
+	/*
+	 * If relatime is enabled, call file_accessed() only if
+	 * zfs_relatime_need_update() is true.  This is needed since datasets
+	 * with inherited "relatime" property aren't necessarily mounted with
+	 * MNT_RELATIME flag (e.g. after `zfs set relatime=...`), which is what
+	 * relatime test in VFS by relatime_need_update() is based on.
+	 */
+	if (!IS_NOATIME(ip) && zfsvfs->z_relatime) {
+		if (zfs_relatime_need_update(ip))
+			file_accessed(filp);
+	} else {
+		file_accessed(filp);
+	}
+
 	return (read);
 }
 
@@ -315,7 +356,7 @@ zpl_write_common_iovec(struct inode *ip, const struct iovec *iovp, size_t count,
     cred_t *cr, size_t skip)
 {
 	ssize_t wrote;
-	uio_t uio;
+	uio_t uio = { { 0 }, 0 };
 	int error;
 	fstrans_cookie_t cookie;
 
@@ -323,12 +364,12 @@ zpl_write_common_iovec(struct inode *ip, const struct iovec *iovp, size_t count,
 		*ppos = i_size_read(ip);
 
 	uio.uio_iov = iovp;
-	uio.uio_skip = skip;
-	uio.uio_resid = count;
 	uio.uio_iovcnt = nr_segs;
 	uio.uio_loffset = *ppos;
-	uio.uio_limit = MAXOFFSET_T;
 	uio.uio_segflg = segment;
+	uio.uio_limit = MAXOFFSET_T;
+	uio.uio_resid = count;
+	uio.uio_skip = skip;
 
 	cookie = spl_fstrans_mark();
 	error = -zfs_write(ip, &uio, flags, cr);
@@ -362,10 +403,12 @@ zpl_iter_write_common(struct kiocb *kiocb, const struct iovec *iovp,
 	cred_t *cr = CRED();
 	struct file *filp = kiocb->ki_filp;
 	ssize_t wrote;
+	unsigned int f_flags = filp->f_flags;
 
+	f_flags |= zfs_io_flags(kiocb);
 	crhold(cr);
 	wrote = zpl_write_common_iovec(filp->f_mapping->host, iovp, count,
-	    nr_segs, &kiocb->ki_pos, seg, filp->f_flags, cr, skip);
+	    nr_segs, &kiocb->ki_pos, seg, f_flags, cr, skip);
 	crfree(cr);
 
 	return (wrote);
@@ -743,7 +786,7 @@ zpl_fallocate_common(struct inode *ip, int mode, loff_t offset, loff_t len)
 	if (offset + len > olen)
 		len = olen - offset;
 	bf.l_type = F_WRLCK;
-	bf.l_whence = 0;
+	bf.l_whence = SEEK_SET;
 	bf.l_start = offset;
 	bf.l_len = len;
 	bf.l_pid = 0;

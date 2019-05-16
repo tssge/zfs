@@ -27,7 +27,7 @@
  * Copyright (c) 2016, Intel Corporation.
  * Copyright 2016 Nexenta Systems, Inc.
  * Copyright (c) 2017 Open-E, Inc. All Rights Reserved.
- * Copyright (c) 2018 Datto Inc.
+ * Copyright (c) 2019 Datto Inc.
  */
 
 #ifndef	_LIBZFS_H
@@ -146,6 +146,7 @@ typedef enum zfs_error {
 	EZFS_TRIMMING,		/* currently trimming */
 	EZFS_NO_TRIM,		/* no active trim */
 	EZFS_TRIM_NOTSUP,	/* device does not support trim */
+	EZFS_NO_RESILVER_DEFER,	/* pool doesn't support resilver_defer */
 	EZFS_UNKNOWN
 } zfs_error_t;
 
@@ -588,8 +589,10 @@ extern int zfs_iter_root(libzfs_handle_t *, zfs_iter_f, void *);
 extern int zfs_iter_children(zfs_handle_t *, zfs_iter_f, void *);
 extern int zfs_iter_dependents(zfs_handle_t *, boolean_t, zfs_iter_f, void *);
 extern int zfs_iter_filesystems(zfs_handle_t *, zfs_iter_f, void *);
-extern int zfs_iter_snapshots(zfs_handle_t *, boolean_t, zfs_iter_f, void *);
-extern int zfs_iter_snapshots_sorted(zfs_handle_t *, zfs_iter_f, void *);
+extern int zfs_iter_snapshots(zfs_handle_t *, boolean_t, zfs_iter_f, void *,
+    uint64_t, uint64_t);
+extern int zfs_iter_snapshots_sorted(zfs_handle_t *, zfs_iter_f, void *,
+    uint64_t, uint64_t);
 extern int zfs_iter_snapspec(zfs_handle_t *, const char *, zfs_iter_f, void *);
 extern int zfs_iter_bookmarks(zfs_handle_t *, zfs_iter_f, void *);
 extern int zfs_iter_mounted(zfs_handle_t *, zfs_iter_f, void *);
@@ -662,6 +665,9 @@ typedef struct sendflags {
 
 	/* only send received properties (ie. -b) */
 	boolean_t backup;
+
+	/* include snapshot holds in send stream */
+	boolean_t holds;
 } sendflags_t;
 
 typedef boolean_t (snapfilter_cb_t)(zfs_handle_t *, void *);
@@ -724,6 +730,12 @@ typedef struct recvflags {
 
 	/* do not mount file systems as they are extracted (private) */
 	boolean_t nomount;
+
+	/* Was holds flag set in the compound header? */
+	boolean_t holds;
+
+	/* skip receive of snapshot holds */
+	boolean_t skipholds;
 } recvflags_t;
 
 extern int zfs_receive(libzfs_handle_t *, const char *, nvlist_t *,
@@ -803,6 +815,13 @@ int libzfs_run_process_get_stdout_nopath(const char *path, char *argv[],
 void libzfs_free_str_array(char **strs, int count);
 
 int libzfs_envvar_is_set(char *envvar);
+
+/*
+ * Utility functions for zfs version
+ */
+extern void zfs_version_userland(char *, int);
+extern int zfs_version_kernel(char *, int);
+extern int zfs_version_print(void);
 
 /*
  * Given a device or file, determine if it is part of a pool.

@@ -98,7 +98,6 @@ struct zfsvfs {
 	zfs_case_t	z_case;		/* case-sense */
 	boolean_t	z_utf8;		/* utf8-only */
 	int		z_norm;		/* normalization flags */
-	boolean_t	z_atime;	/* enable atimes mount option */
 	boolean_t	z_relatime;	/* enable relatime mount option */
 	boolean_t	z_unmounted;	/* unmounted */
 	rrmlock_t	z_teardown_lock;
@@ -117,6 +116,8 @@ struct zfsvfs {
 	boolean_t	z_replay;	/* set during ZIL replay */
 	boolean_t	z_use_sa;	/* version allow system attributes */
 	boolean_t	z_xattr_sa;	/* allow xattrs to be stores as SA */
+	boolean_t	z_draining;	/* is true when drain is active */
+	boolean_t	z_drain_cancel; /* signal the unlinked drain to stop */
 	uint64_t	z_version;	/* ZPL version */
 	uint64_t	z_shares_dir;	/* hidden shares dir */
 	dataset_kstats_t	z_kstat;	/* fs kstats */
@@ -132,6 +133,7 @@ struct zfsvfs {
 	uint64_t	z_hold_size;	/* znode hold array size */
 	avl_tree_t	*z_hold_trees;	/* znode hold trees */
 	kmutex_t	*z_hold_locks;	/* znode hold locks */
+	taskqid_t	z_drain_task;	/* task id for the unlink drain task */
 };
 
 #define	ZSB_XATTR	0x0001		/* Enable user xattrs */

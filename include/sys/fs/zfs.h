@@ -25,8 +25,8 @@
  * Copyright 2011 Nexenta Systems, Inc.  All rights reserved.
  * Copyright (c) 2013, 2017 Joyent, Inc. All rights reserved.
  * Copyright (c) 2014 Integros [integros.com]
- * Copyright (c) 2017 Datto Inc.
  * Copyright (c) 2017, Intel Corporation.
+ * Copyright (c) 2019 Datto Inc.
  */
 
 /* Portions Copyright 2010 Robert Milkowski */
@@ -183,6 +183,7 @@ typedef enum {
 	ZFS_PROP_KEYSTATUS,
 	ZFS_PROP_REMAPTXG,		/* not exposed to the user */
 	ZFS_PROP_SPECIAL_SMALL_BLOCKS,
+	ZFS_PROP_IVSET_GUID,		/* not exposed to the user */
 	ZFS_NUM_PROPS
 } zfs_prop_t;
 
@@ -488,10 +489,8 @@ typedef enum zfs_key_location {
 #define	SPA_VERSION_5000		5000ULL
 
 /*
- * When bumping up SPA_VERSION, make sure GRUB ZFS understands the on-disk
- * format change. Go to usr/src/grub/grub-0.97/stage2/{zfs-include/, fsys_zfs*},
- * and do the appropriate changes.  Also bump the version number in
- * usr/src/grub/capability.
+ * The incrementing pool version number has been replaced by pool feature
+ * flags.  For more details, see zfeature.c.
  */
 #define	SPA_VERSION			SPA_VERSION_5000
 #define	SPA_VERSION_STRING		"5000"
@@ -556,9 +555,6 @@ typedef enum zfs_key_location {
  * ZPL version - rev'd whenever an incompatible on-disk format change
  * occurs.  This is independent of SPA/DMU/ZAP versioning.  You must
  * also update the version_table[] and help message in zfs_prop.c.
- *
- * When changing, be sure to teach GRUB how to read the new format!
- * See usr/src/grub/grub-0.97/stage2/{zfs-include/,fsys_zfs*}
  */
 #define	ZPL_VERSION_1			1ULL
 #define	ZPL_VERSION_2			2ULL
@@ -723,6 +719,7 @@ typedef struct zpool_load_policy {
 #define	ZPOOL_CONFIG_CACHEFILE		"cachefile"	/* not stored on disk */
 #define	ZPOOL_CONFIG_MMP_STATE		"mmp_state"	/* not stored on disk */
 #define	ZPOOL_CONFIG_MMP_TXG		"mmp_txg"	/* not stored on disk */
+#define	ZPOOL_CONFIG_MMP_SEQ		"mmp_seq"	/* not stored on disk */
 #define	ZPOOL_CONFIG_MMP_HOSTNAME	"mmp_hostname"	/* not stored on disk */
 #define	ZPOOL_CONFIG_MMP_HOSTID		"mmp_hostid"	/* not stored on disk */
 #define	ZPOOL_CONFIG_ALLOCATION_BIAS	"alloc_bias"	/* not stored on disk */
@@ -997,6 +994,7 @@ typedef enum zpool_errata {
 	ZPOOL_ERRATA_ZOL_2094_SCRUB,
 	ZPOOL_ERRATA_ZOL_2094_ASYNC_DESTROY,
 	ZPOOL_ERRATA_ZOL_6845_ENCRYPTION,
+	ZPOOL_ERRATA_ZOL_8308_ENCRYPTION,
 } zpool_errata_t;
 
 /*
@@ -1120,7 +1118,7 @@ typedef enum pool_trim_func {
  * is passed between kernel and userland as an nvlist uint64 array.
  */
 typedef struct ddt_object {
-	uint64_t	ddo_count;	/* number of elements in ddt 	*/
+	uint64_t	ddo_count;	/* number of elements in ddt	*/
 	uint64_t	ddo_dspace;	/* size of ddt on disk		*/
 	uint64_t	ddo_mspace;	/* size of ddt in-core		*/
 } ddt_object_t;
@@ -1176,13 +1174,20 @@ typedef enum {
 } vdev_trim_state_t;
 
 /*
+ * nvlist name constants. Facilitate restricting snapshot iteration range for
+ * the "list next snapshot" ioctl
+ */
+#define	SNAP_ITER_MIN_TXG	"snap_iter_min_txg"
+#define	SNAP_ITER_MAX_TXG	"snap_iter_max_txg"
+
+/*
  * /dev/zfs ioctl numbers.
  *
  * These numbers cannot change over time. New ioctl numbers must be appended.
  */
 typedef enum zfs_ioc {
 	/*
-	 * Illumos - 71/128 numbers reserved.
+	 * illumos - 81/128 numbers reserved.
 	 */
 	ZFS_IOC_FIRST =	('Z' << 8),
 	ZFS_IOC = ZFS_IOC_FIRST,
@@ -1256,9 +1261,9 @@ typedef enum zfs_ioc {
 	ZFS_IOC_BOOKMARK,			/* 0x5a43 */
 	ZFS_IOC_GET_BOOKMARKS,			/* 0x5a44 */
 	ZFS_IOC_DESTROY_BOOKMARKS,		/* 0x5a45 */
-	ZFS_IOC_CHANNEL_PROGRAM,		/* 0x5a46 */
-	ZFS_IOC_RECV_NEW,			/* 0x5a47 */
-	ZFS_IOC_POOL_SYNC,			/* 0x5a48 */
+	ZFS_IOC_RECV_NEW,			/* 0x5a46 */
+	ZFS_IOC_POOL_SYNC,			/* 0x5a47 */
+	ZFS_IOC_CHANNEL_PROGRAM,		/* 0x5a48 */
 	ZFS_IOC_LOAD_KEY,			/* 0x5a49 */
 	ZFS_IOC_UNLOAD_KEY,			/* 0x5a4a */
 	ZFS_IOC_CHANGE_KEY,			/* 0x5a4b */
@@ -1309,6 +1314,10 @@ typedef enum {
 	ZFS_ERR_IOC_ARG_UNAVAIL,
 	ZFS_ERR_IOC_ARG_REQUIRED,
 	ZFS_ERR_IOC_ARG_BADTYPE,
+	ZFS_ERR_WRONG_PARENT,
+	ZFS_ERR_FROM_IVSET_GUID_MISSING,
+	ZFS_ERR_FROM_IVSET_GUID_MISMATCH,
+	ZFS_ERR_SPILL_BLOCK_FLAG_MISSING,
 } zfs_errno_t;
 
 /*

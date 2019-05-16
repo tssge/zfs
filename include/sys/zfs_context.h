@@ -237,6 +237,7 @@ extern kthread_t *zk_thread_create(void (*func)(void *), void *arg,
 
 #define	kpreempt_disable()	((void)0)
 #define	kpreempt_enable()	((void)0)
+#define	cond_resched()		sched_yield()
 
 /*
  * Mutexes
@@ -375,6 +376,7 @@ typedef struct procfs_list_node {
 
 void procfs_list_install(const char *module,
     const char *name,
+    mode_t mode,
     procfs_list_t *procfs_list,
     int (*show)(struct seq_file *f, void *p),
     int (*show_header)(struct seq_file *f),

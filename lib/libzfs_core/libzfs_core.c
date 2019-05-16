@@ -68,7 +68,7 @@
  *  of libzfs_core.  For example, libzfs may implement "zfs send -R |
  *  zfs receive" by using individual "send one snapshot", rename,
  *  destroy, and "receive one snapshot" operations in libzfs_core.
- *  /sbin/zfs and /zbin/zpool will link with both libzfs and
+ *  /sbin/zfs and /sbin/zpool will link with both libzfs and
  *  libzfs_core.  Other consumers should aim to use only libzfs_core,
  *  since that will be the supported, stable interface going forwards.
  */
@@ -857,7 +857,7 @@ recv_impl(const char *snapname, nvlist_t *recvdprops, nvlist_t *localprops,
 
 		ASSERT3S(g_refcount, >, 0);
 
-		(void) strlcpy(zc.zc_name, fsname, sizeof (zc.zc_value));
+		(void) strlcpy(zc.zc_name, fsname, sizeof (zc.zc_name));
 		(void) strlcpy(zc.zc_value, snapname, sizeof (zc.zc_value));
 
 		if (recvdprops != NULL) {
@@ -1124,6 +1124,7 @@ lzc_bookmark(nvlist_t *bookmarks, nvlist_t **errlist)
  * "guid" - globally unique identifier of the snapshot it refers to
  * "createtxg" - txg when the snapshot it refers to was created
  * "creation" - timestamp when the snapshot it refers to was created
+ * "ivsetguid" - IVset guid for identifying encrypted snapshots
  *
  * The format of the returned nvlist as follows:
  * <short name of bookmark> -> {

@@ -67,20 +67,6 @@
 #include "zfs_comutil.h"
 
 /*
- * Define ZNODE_STATS to turn on statistic gathering. By default, it is only
- * turned on when DEBUG is also defined.
- */
-#ifdef	DEBUG
-#define	ZNODE_STATS
-#endif	/* DEBUG */
-
-#ifdef	ZNODE_STATS
-#define	ZNODE_STAT_ADD(stat)			((stat)++)
-#else
-#define	ZNODE_STAT_ADD(stat)			/* nothing */
-#endif	/* ZNODE_STATS */
-
-/*
  * Functions needed for userland (ie: libzpool) are not put under
  * #ifdef_KERNEL; the rest of the functions have dependencies
  * (such as VFS logic) that will not compile easily in userland.
@@ -90,6 +76,12 @@
 static kmem_cache_t *znode_cache = NULL;
 static kmem_cache_t *znode_hold_cache = NULL;
 unsigned int zfs_object_mutex_size = ZFS_OBJ_MTX_SZ;
+
+/*
+ * This is used by the test suite so that it can delay znodes from being
+ * freed in order to inspect the unlinked set.
+ */
+int zfs_unlink_suspend_progress = 0;
 
 /*
  * This callback is invoked when acquiring a RL_WRITER or RL_APPEND lock on
@@ -1339,7 +1331,7 @@ zfs_zinactive(znode_t *zp)
 	 */
 	if (zp->z_unlinked) {
 		ASSERT(!zfsvfs->z_issnap);
-		if (!zfs_is_readonly(zfsvfs)) {
+		if (!zfs_is_readonly(zfsvfs) && !zfs_unlink_suspend_progress) {
 			mutex_exit(&zp->z_lock);
 			zfs_znode_hold_exit(zfsvfs, zh);
 			zfs_rmnode(zp);
@@ -1353,16 +1345,39 @@ zfs_zinactive(znode_t *zp)
 	zfs_znode_hold_exit(zfsvfs, zh);
 }
 
-static inline int
-zfs_compare_timespec(struct timespec *t1, struct timespec *t2)
+#if defined(HAVE_INODE_TIMESPEC64_TIMES)
+#define	zfs_compare_timespec timespec64_compare
+#else
+#define	zfs_compare_timespec timespec_compare
+#endif
+
+/*
+ * Determine whether the znode's atime must be updated.  The logic mostly
+ * duplicates the Linux kernel's relatime_need_update() functionality.
+ * This function is only called if the underlying filesystem actually has
+ * atime updates enabled.
+ */
+boolean_t
+zfs_relatime_need_update(const struct inode *ip)
 {
-	if (t1->tv_sec < t2->tv_sec)
-		return (-1);
+	inode_timespec_t now;
 
-	if (t1->tv_sec > t2->tv_sec)
-		return (1);
+	gethrestime(&now);
+	/*
+	 * In relatime mode, only update the atime if the previous atime
+	 * is earlier than either the ctime or mtime or if at least a day
+	 * has passed since the last update of atime.
+	 */
+	if (zfs_compare_timespec(&ip->i_mtime, &ip->i_atime) >= 0)
+		return (B_TRUE);
 
-	return (t1->tv_nsec - t2->tv_nsec);
+	if (zfs_compare_timespec(&ip->i_ctime, &ip->i_atime) >= 0)
+		return (B_TRUE);
+
+	if ((hrtime_t)now.tv_sec - (hrtime_t)ip->i_atime.tv_sec >= 24*60*60)
+		return (B_TRUE);
+
+	return (B_FALSE);
 }
 
 /*
@@ -2214,4 +2229,7 @@ EXPORT_SYMBOL(zfs_obj_to_path);
 /* CSTYLED */
 module_param(zfs_object_mutex_size, uint, 0644);
 MODULE_PARM_DESC(zfs_object_mutex_size, "Size of znode hold array");
+module_param(zfs_unlink_suspend_progress, int, 0644);
+MODULE_PARM_DESC(zfs_unlink_suspend_progress, "Set to prevent async unlinks "
+"(debug - leaks space into the unlinked set)");
 #endif

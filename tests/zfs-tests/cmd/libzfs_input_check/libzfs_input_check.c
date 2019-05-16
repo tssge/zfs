@@ -37,7 +37,7 @@ const char *active_test;
 /*
  * Tracks which zfs_ioc_t commands were tested
  */
-boolean_t ioc_tested[256];
+boolean_t ioc_tested[ZFS_IOC_LAST - ZFS_IOC_FIRST];
 
 /*
  * Legacy ioctls that are skipped (for now)
@@ -898,9 +898,9 @@ validate_ioc_values(void)
 	    ZFS_IOC_BASE + 67 == ZFS_IOC_BOOKMARK &&
 	    ZFS_IOC_BASE + 68 == ZFS_IOC_GET_BOOKMARKS &&
 	    ZFS_IOC_BASE + 69 == ZFS_IOC_DESTROY_BOOKMARKS &&
-	    ZFS_IOC_BASE + 70 == ZFS_IOC_CHANNEL_PROGRAM &&
-	    ZFS_IOC_BASE + 71 == ZFS_IOC_RECV_NEW &&
-	    ZFS_IOC_BASE + 72 == ZFS_IOC_POOL_SYNC &&
+	    ZFS_IOC_BASE + 70 == ZFS_IOC_RECV_NEW &&
+	    ZFS_IOC_BASE + 71 == ZFS_IOC_POOL_SYNC &&
+	    ZFS_IOC_BASE + 72 == ZFS_IOC_CHANNEL_PROGRAM &&
 	    ZFS_IOC_BASE + 73 == ZFS_IOC_LOAD_KEY &&
 	    ZFS_IOC_BASE + 74 == ZFS_IOC_UNLOAD_KEY &&
 	    ZFS_IOC_BASE + 75 == ZFS_IOC_CHANGE_KEY &&
