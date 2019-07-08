@@ -76,7 +76,7 @@ int64_t _zfs_refcount_add(zfs_refcount_t *, void *, const char *, size_t);
 #define	zfs_refcount_add(rc, holder_tag)	\
 	_zfs_refcount_add(rc, holder_tag, __FILE__, __LINE__)
 int64_t zfs_refcount_remove(zfs_refcount_t *, void *);
-int64_t _zfs_refcount_add_many(refcount_t *, uint64_t, void *, const char *,
+int64_t _zfs_refcount_add_many(zfs_refcount_t *, uint64_t, void *, const char *,
     size_t);
 #define	zfs_refcount_add_many(rc, number, holder_tag)	\
 	_zfs_refcount_add_many(rc, number, holder_tag, __FILE__, __LINE__)

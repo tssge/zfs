@@ -1017,6 +1017,7 @@ dmu_send_init(struct send_thread_arg *to_arg, dsl_pool_t *dp,
 	dmu_sendarg_t *dsp;
 	int err;
 	uint64_t featureflags = 0;
+	size_t payload_len = 0;
 	file_t *fp;
 
 	*payload = NULL;
@@ -1163,7 +1164,8 @@ dmu_send_init(struct send_thread_arg *to_arg, dsl_pool_t *dp,
 			fnvlist_add_nvlist(nvl, "crypt_keydata", keynvl);
 		}
 
-		*payload = fnvlist_pack(nvl, (size_t *)&drr->drr_payloadlen);
+		*payload = fnvlist_pack(nvl, &payload_len);
+		drr->drr_payloadlen = payload_len;
 		fnvlist_free(keynvl);
 		fnvlist_free(nvl);
 	}
