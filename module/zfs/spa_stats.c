@@ -25,6 +25,7 @@
 #include <sys/vdev_impl.h>
 #include <sys/spa.h>
 #include <zfs_comutil.h>
+#include <sys/metaslab_impl.h>
 
 /*
  * Keeps stats on last N reads per spa_t, disabled by default.
@@ -301,6 +302,69 @@ spa_txg_history_init(spa_t *spa)
 	    spa_txg_history_show_header,
 	    spa_txg_history_clear,
 	    offsetof(spa_txg_history_t, sth_node));
+}
+
+static void *
+spa_frag_addr(kstat_t *ksp, loff_t n)
+{
+  if (n == 0)
+    return ksp->ks_private;
+  return NULL;
+}
+
+static int
+spa_frag_data(char *buf, size_t size, void *data) {
+  spa_t *spa = (spa_t *)data;
+  size_t offset = 0;
+  const char *name = spa_name(spa);
+
+  metaslab_class_t *mc = spa_normal_class(spa);
+  for (int i=0; i<RANGE_TREE_HISTOGRAM_SIZE; i++) {
+    if (mc->mc_histogram[i] > 0) {
+      int res = snprintf(buf + offset, size, "zfs_fragmentation_normal{power=\"%d\",pool=\"%s\"} %llu\n", i, name, (u_longlong_t)mc->mc_histogram[i]);
+      offset += res;
+      size -= res;
+    }
+  }
+
+  metaslab_class_t *smc = spa_special_class(spa);
+  for (int i=0; i<RANGE_TREE_HISTOGRAM_SIZE; i++) {
+    if (smc->mc_histogram[i] > 0) {
+      int res = snprintf(buf + offset, size, "zfs_fragmentation_special{power=\"%d\",pool=\"%s\"} %llu\n", i, name, (u_longlong_t)smc->mc_histogram[i]);
+      offset += res;
+      size -= res;
+    }
+  }
+  return 0;
+}
+
+static void
+spa_fragmentation_init(spa_t *spa)
+{
+  char *name;
+  spa_history_kstat_t *shk = &spa->spa_stats.fragmentation;
+  kstat_t *ksp;
+
+  name = kmem_asprintf("zfs/%s", spa_name(spa));
+  ksp = kstat_create(name, 0, "fragmentation", "misc", KSTAT_TYPE_RAW, 0, KSTAT_FLAG_VIRTUAL);
+
+  shk->kstat = ksp;
+  if (ksp) {
+    ksp->ks_private = spa;
+    ksp->ks_flags |= KSTAT_FLAG_NO_HEADERS;
+    kstat_set_raw_ops(ksp, NULL, spa_frag_data, spa_frag_addr);
+    kstat_install(ksp);
+  }
+  kmem_strfree(name);
+}
+
+static void
+spa_fragmentation_destroy(spa_t *spa)
+{
+  spa_history_kstat_t *shk = &spa->spa_stats.fragmentation;
+  kstat_t *ksp = shk->kstat;
+  if (ksp)
+    kstat_delete(ksp);
 }
 
 static void
@@ -1047,11 +1111,13 @@ spa_stats_init(spa_t *spa)
 	spa_state_init(spa);
 	spa_guid_init(spa);
 	spa_iostats_init(spa);
+	spa_fragmentation_init(spa);
 }
 
 void
 spa_stats_destroy(spa_t *spa)
 {
+	spa_fragmentation_destroy(spa);
 	spa_iostats_destroy(spa);
 	spa_guid_destroy(spa);
 	spa_state_destroy(spa);
