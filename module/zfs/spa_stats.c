@@ -856,7 +856,7 @@ spa_guid_init(spa_t *spa)
 }
 
 static void
-spa_health_destroy(spa_t *spa)
+spa_state_destroy(spa_t *spa)
 {
 	spa_history_kstat_t *shk = &spa->spa_stats.state;
 	kstat_t *ksp = shk->kstat;
@@ -1053,12 +1053,12 @@ void
 spa_stats_destroy(spa_t *spa)
 {
 	spa_iostats_destroy(spa);
-	spa_health_destroy(spa);
+	spa_guid_destroy(spa);
+	spa_state_destroy(spa);
+	spa_mmp_history_destroy(spa);
 	spa_tx_assign_destroy(spa);
 	spa_txg_history_destroy(spa);
 	spa_read_history_destroy(spa);
-	spa_mmp_history_destroy(spa);
-	spa_guid_destroy(spa);
 }
 
 ZFS_MODULE_PARAM(zfs, zfs_, read_history, UINT, ZMOD_RW,
