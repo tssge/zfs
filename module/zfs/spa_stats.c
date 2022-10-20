@@ -303,67 +303,103 @@ spa_txg_history_init(spa_t *spa)
 	    offsetof(spa_txg_history_t, sth_node));
 }
 
+typedef struct {
+    spa_t *spa;
+    int metaclass;
+} freespace_histogram_stat_t;
+
 static void *
 spa_frag_addr(kstat_t *ksp, loff_t n)
 {
-  if (n == 0)
-    return ksp->ks_private;
-  return NULL;
+	if (n == 0) {
+		freespace_histogram_stat_t *stat = ksp->ks_private;
+		switch (stat->metaclass) {
+		case 0:
+			return (spa_normal_class(stat->spa));
+		case 1:
+			return (spa_log_class(stat->spa));
+		case 2:
+			return (spa_embedded_log_class(stat->spa));
+		case 3:
+			return (spa_special_class(stat->spa));
+		case 4:
+			return (spa_dedup_class(stat->spa));
+		}
+	}
+	return (NULL);
 }
 
 static int
-spa_frag_data(char *buf, size_t size, void *data) {
-  spa_t *spa = (spa_t *)data;
-  size_t offset = 0;
-  const char *name = spa_name(spa);
+spa_frag_data(char *buf, size_t size, void *data)
+{
+	metaslab_class_t *mc = data;
+	size_t offset = 0;
+	int res;
+	// without this, it becomes a data-leak, and un-initialized strings
+	// can be returned if all buckets are 0
+	buf[0] = 0;
 
-  metaslab_class_t *mc = spa_normal_class(spa);
-  for (int i=0; i<RANGE_TREE_HISTOGRAM_SIZE; i++) {
-    if (mc->mc_histogram[i] > 0) {
-      int res = snprintf(buf + offset, size, "zfs_fragmentation_normal{power=\"%d\",pool=\"%s\"} %llu\n", i, name, (u_longlong_t)mc->mc_histogram[i]);
-      offset += res;
-      size -= res;
-    }
-  }
+	for (int i = 0; i < RANGE_TREE_HISTOGRAM_SIZE; i++) {
+		if (mc->mc_histogram[i] > 0) {
+			res = snprintf(buf + offset, size, "%d %llu\n", i,
+			    (u_longlong_t)mc->mc_histogram[i]);
+			offset += res;
+			size -= res;
+		}
+	}
 
-  metaslab_class_t *smc = spa_special_class(spa);
-  for (int i=0; i<RANGE_TREE_HISTOGRAM_SIZE; i++) {
-    if (smc->mc_histogram[i] > 0) {
-      int res = snprintf(buf + offset, size, "zfs_fragmentation_special{power=\"%d\",pool=\"%s\"} %llu\n", i, name, (u_longlong_t)smc->mc_histogram[i]);
-      offset += res;
-      size -= res;
-    }
-  }
-  return 0;
+	return (0);
 }
 
 static void
 spa_fragmentation_init(spa_t *spa)
 {
-  char *name;
-  spa_history_kstat_t *shk = &spa->spa_stats.fragmentation;
-  kstat_t *ksp;
+	char *dirname;
+	const char *statnames[] = {
+	    "fragmentation_normal",
+	    "fragmentation_log",
+	    "fragmentation_embedded_log",
+	    "fragmentation_special",
+	    "fragmentation_dedup"
+	};
+	for (int i = 0; i < 5; i++) {
+		spa_history_kstat_t *shk = &spa->spa_stats.fragmentation[i];
+		kstat_t *ksp;
 
-  name = kmem_asprintf("zfs/%s", spa_name(spa));
-  ksp = kstat_create(name, 0, "fragmentation", "misc", KSTAT_TYPE_RAW, 0, KSTAT_FLAG_VIRTUAL);
+		dirname = kmem_asprintf("zfs/%s", spa_name(spa));
+		ksp = kstat_create(dirname, 0, statnames[i], "misc",
+		    KSTAT_TYPE_RAW, 0, KSTAT_FLAG_VIRTUAL);
+		kmem_strfree(dirname);
 
-  shk->kstat = ksp;
-  if (ksp) {
-    ksp->ks_private = spa;
-    ksp->ks_flags |= KSTAT_FLAG_NO_HEADERS;
-    kstat_set_raw_ops(ksp, NULL, spa_frag_data, spa_frag_addr);
-    kstat_install(ksp);
-  }
-  kmem_strfree(name);
+		shk->kstat = ksp;
+		if (ksp) {
+			freespace_histogram_stat_t *stat = kmem_zalloc(
+			    sizeof (freespace_histogram_stat_t), KM_SLEEP);
+			stat->spa = spa;
+			stat->metaclass = i;
+			ksp->ks_private = stat;
+			ksp->ks_flags |= KSTAT_FLAG_NO_HEADERS;
+			kstat_set_raw_ops(ksp, NULL, spa_frag_data,
+			    spa_frag_addr);
+			kstat_install(ksp);
+		}
+	}
 }
 
 static void
 spa_fragmentation_destroy(spa_t *spa)
 {
-  spa_history_kstat_t *shk = &spa->spa_stats.fragmentation;
-  kstat_t *ksp = shk->kstat;
-  if (ksp)
-    kstat_delete(ksp);
+	for (int i = 0; i < 5; i++) {
+		spa_history_kstat_t *shk = &spa->spa_stats.fragmentation[i];
+		kstat_t *ksp = shk->kstat;
+		if (ksp) {
+			if (ksp->ks_private) {
+				kmem_free(ksp->ks_private,
+				    sizeof (freespace_histogram_stat_t));
+			}
+			kstat_delete(ksp);
+		}
+	}
 }
 
 static void
