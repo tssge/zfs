@@ -1860,7 +1860,6 @@ gcm_init_avx(gcm_ctx_t *ctx, const uint8_t *iv, size_t iv_len,
 	}
 	clear_fpu_regs();
 	kfpu_end();
-	return (CRYPTO_SUCCESS);
 }
 #endif /* ifdef CAN_USE_GCM_ASM_AVX */
 
