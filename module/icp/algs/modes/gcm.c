@@ -58,12 +58,6 @@ static uint32_t user_sel_impl = IMPL_FASTEST;
 #ifdef CAN_USE_GCM_ASM_AVX
 /* Does the architecture we run on support the MOVBE instruction? */
 boolean_t gcm_avx_can_use_movbe = B_FALSE;
-/*
- * Whether to use the optimized openssl gcm and ghash implementations.
- * Set to true if module parameter icp_gcm_impl == "avx".
- */
-static boolean_t gcm_use_avx = B_FALSE;
-#define	GCM_IMPL_USE_AVX	(*(volatile boolean_t *)&gcm_use_avx)
 
 extern boolean_t ASMABI atomic_toggle_boolean_nv(volatile boolean_t *);
 #endif
@@ -277,9 +271,6 @@ static inline int gcm_decrypt_final_isalc(gcm_ctx_t *, crypto_data_t *);
 
 #ifdef CAN_USE_GCM_ASM_AVX
 static inline boolean_t gcm_avx_will_work(void);
-static inline void gcm_set_avx(boolean_t);
-static inline boolean_t gcm_toggle_avx(void);
-static inline size_t gcm_simd_get_htab_size(boolean_t);
 
 static int gcm_mode_encrypt_contiguous_blocks_avx(gcm_ctx_t *, const uint8_t *,
 	size_t, crypto_data_t *, size_t);
@@ -844,7 +835,11 @@ gcm_init_ctx(gcm_ctx_t *gcm_ctx, char *param,
 			return (rv);
 		}
 		gcm_ctx->gcm_flags |= GCM_MODE;
-
+		/*
+		 * The isalc implementations do not support a IV lenght
+		 * other than 12 bytes and only 8, 12 and 16 bytes tag
+		 * length.
+		 */
 		size_t tbits = gcm_param->ulTagBits;
 		if (gcm_param->ulIvLen != 12 ||
 			(tbits != 64 && tbits != 96 && tbits != 128)) {
@@ -855,10 +850,6 @@ gcm_init_ctx(gcm_ctx_t *gcm_ctx, char *param,
 
 		gcm_ctx->gcm_tag_len = tag_len;
 		gcm_ctx->gcm_processed_data_len = 0;
-
-		/* these values are in bits */
-		gcm_ctx->gcm_len_a_len_c[0]
-		    = htonll(CRYPTO_BYTES2BITS(gcm_param->ulAADLen));
 	} else {
 		return (CRYPTO_MECHANISM_PARAM_INVALID);
 	}
