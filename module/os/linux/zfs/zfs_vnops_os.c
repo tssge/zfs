@@ -4670,7 +4670,7 @@ zfs_fiemap_assemble(struct inode *ip, zfs_fiemap_t *fm)
 		for (int i = 0; i < MIN(dnp->dn_nblkptr, fm->fm_copies); i++)
 			fm->fm_fill_count += BP_GET_FILL(&dnp->dn_blkptr[i]);
 
-		fm->fm_fill_count += P2ROUNDUP(range_tree_space(
+		fm->fm_fill_count += P2ROUNDUP(zfs_range_tree_space(
 		    fm->fm_dirty_tree), fm->fm_block_size) / fm->fm_block_size;
 	} else {
 		SET_BOOKMARK(&czb, dmu_objset_id(dn->dn_objset),
@@ -4693,9 +4693,9 @@ zfs_fiemap_assemble(struct inode *ip, zfs_fiemap_t *fm)
 			zfs_fiemap_entry_t *fe;
 
 			if (i == 0) {
-				range_tree_walk(fm->fm_dirty_tree,
+				zfs_range_tree_walk(fm->fm_dirty_tree,
 				    zfs_fiemap_add_dirty, fm);
-				range_tree_walk(fm->fm_free_tree,
+				zfs_range_tree_walk(fm->fm_free_tree,
 				    zfs_fiemap_add_free, fm);
 			}
 
@@ -4899,9 +4899,9 @@ zfs_fiemap_create(uint64_t start, uint64_t len, uint64_t flags, uint64_t max)
 		    offsetof(struct zfs_fiemap_entry, fe_node));
 	}
 
-	fm->fm_dirty_tree = range_tree_create(NULL, RANGE_SEG64, NULL,
+	fm->fm_dirty_tree = zfs_range_tree_create(NULL, RANGE_SEG64, NULL,
 	    start, 0);
-	fm->fm_free_tree = range_tree_create(NULL, RANGE_SEG64, NULL, start, 0);
+	fm->fm_free_tree = zfs_range_tree_create(NULL, RANGE_SEG64, NULL, start, 0);
 
 	return (fm);
 }
@@ -4924,10 +4924,10 @@ zfs_fiemap_destroy(zfs_fiemap_t *fm)
 	}
 
 	zfs_range_tree_vacate(fm->fm_dirty_tree, NULL, NULL);
-	range_tree_destroy(fm->fm_dirty_tree);
+	zfs_range_tree_destroy(fm->fm_dirty_tree);
 
 	zfs_range_tree_vacate(fm->fm_free_tree, NULL, NULL);
-	range_tree_destroy(fm->fm_free_tree);
+	zfs_range_tree_destroy(fm->fm_free_tree);
 
 	kmem_free(fm, sizeof (zfs_fiemap_t));
 }
