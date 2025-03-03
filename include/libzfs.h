@@ -1072,7 +1072,7 @@ _LIBZFS_H int zfs_userns(zfs_handle_t *zhp, const char *nspath, int attach);
 
 #endif
 
-extern int zfs_get_hole_count(const char *, uint64_t *, uint64_t *);
+_LIBZFS_H int zfs_get_hole_count(const char *, uint64_t *, uint64_t *);
 
 #ifdef	__cplusplus
 }

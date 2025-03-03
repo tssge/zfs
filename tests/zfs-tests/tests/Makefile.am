@@ -275,6 +275,8 @@ nobase_dist_datadir_zfs_tests_tests_DATA += \
 	functional/events/events.cfg \
 	functional/events/events_common.kshlib \
 	functional/fault/fault.cfg \
+	functional/fiemap/fiemap.kshlib \
+	functional/fiemap/fiemap.cfg \
 	functional/grow/grow.cfg \
 	functional/history/history.cfg \
 	functional/history/history_common.kshlib \
@@ -1555,6 +1557,15 @@ nobase_dist_datadir_zfs_tests_tests_SCRIPTS += \
 	functional/features/large_dnode/large_dnode_008_pos.ksh \
 	functional/features/large_dnode/large_dnode_009_pos.ksh \
 	functional/features/large_dnode/setup.ksh \
+	functional/fiemap/fiemap_sync.ksh \
+	functional/fiemap/fiemap_flags.ksh \
+	functional/fiemap/fiemap_delalloc.ksh \
+	functional/fiemap/fiemap_free.ksh \
+	functional/fiemap/fiemap_copies.ksh \
+	functional/fiemap/fiemap_nomerge.ksh \
+	functional/fiemap/fiemap_holes_sanity.ksh \
+	functional/fiemap/setup.ksh \
+	functional/fiemap/cleanup.ksh \
 	functional/grow/grow_pool_001_pos.ksh \
 	functional/grow/grow_replicas_001_pos.ksh \
 	functional/history/cleanup.ksh \

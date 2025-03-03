@@ -423,8 +423,8 @@ void dbuf_free_range(struct dnode *dn, uint64_t start, uint64_t end,
     struct dmu_tx *);
 
 void dbuf_new_size(dmu_buf_impl_t *db, int size, dmu_tx_t *tx);
-int dbuf_generate_dirty_maps(dnode_t *dn, range_tree_t *dirty_tree,
-    range_tree_t *free_tree, uint64_t *syncing_txg, uint64_t open_txg);
+int dbuf_generate_dirty_maps(dnode_t *dn, zfs_range_tree_t *dirty_tree,
+    zfs_range_tree_t *free_tree, uint64_t *syncing_txg, uint64_t open_txg);
 
 void dbuf_stats_init(dbuf_hash_table_t *hash);
 void dbuf_stats_destroy(void);

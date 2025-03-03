@@ -4923,10 +4923,10 @@ zfs_fiemap_destroy(zfs_fiemap_t *fm)
 		avl_destroy(&fm->fm_extent_trees[i]);
 	}
 
-	range_tree_vacate(fm->fm_dirty_tree, NULL, NULL);
+	zfs_range_tree_vacate(fm->fm_dirty_tree, NULL, NULL);
 	range_tree_destroy(fm->fm_dirty_tree);
 
-	range_tree_vacate(fm->fm_free_tree, NULL, NULL);
+	zfs_range_tree_vacate(fm->fm_free_tree, NULL, NULL);
 	range_tree_destroy(fm->fm_free_tree);
 
 	kmem_free(fm, sizeof (zfs_fiemap_t));

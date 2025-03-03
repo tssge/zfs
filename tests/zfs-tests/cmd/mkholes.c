@@ -13,7 +13,7 @@
  * Copyright (c) 2018 by Delphix. All rights reserved.
  */
 
-#include "../file_common.h"
+#include "file/file_common.h"
 #include <stdio.h>
 #include <fcntl.h>
 #include <unistd.h>

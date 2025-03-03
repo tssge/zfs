@@ -9,10 +9,7 @@ scripts_zfs_tests_bin_PROGRAMS += %D%/cp_files
 scripts_zfs_tests_bin_PROGRAMS += %D%/ctime
 scripts_zfs_tests_bin_PROGRAMS += %D%/dir_rd_update
 scripts_zfs_tests_bin_PROGRAMS += %D%/dosmode_readonly_write
-scripts_zfs_tests_bin_PROGRAMS += %D%/fiemap
 scripts_zfs_tests_bin_PROGRAMS += %D%/get_diff
-scripts_zfs_tests_bin_PROGRAMS += %D%/getholes
-scripts_zfs_tests_bin_PROGRAMS += %D%/mkholes
 scripts_zfs_tests_bin_PROGRAMS += %D%/rename_dir
 scripts_zfs_tests_bin_PROGRAMS += %D%/suid_write_to_file
 scripts_zfs_tests_bin_PROGRAMS += %D%/truncate_test
@@ -52,6 +49,13 @@ scripts_zfs_tests_bin_PROGRAMS += %D%/draid
 	libnvpair.la
 %C%_draid_LDADD += $(ZLIB_LIBS)
 
+scripts_zfs_tests_bin_PROGRAMS += %D%/fiemap
+%C%_fiemap_CFLAGS = $(AM_CFLAGS) $(LIBZPOOL_CFLAGS) $(LIBAVL_CFLAGS)
+%C%_fiemap_LDADD = \
+	libavl.la \
+	libzpool.la
+%C%_fiemap_SOURCES = %D%/fiemap.c
+
 dist_noinst_DATA += %D%/file/file_common.h
 scripts_zfs_tests_bin_PROGRAMS += %D%/file_append %D%/file_check %D%/file_trunc %D%/file_write %D%/largest_file %D%/randwritecomp
 %C%_file_append_SOURCES   = %D%/file/file_append.c
@@ -61,6 +65,12 @@ scripts_zfs_tests_bin_PROGRAMS += %D%/file_append %D%/file_check %D%/file_trunc 
 %C%_largest_file_SOURCES  = %D%/file/largest_file.c
 %C%_randwritecomp_SOURCES = %D%/file/randwritecomp.c
 
+scripts_zfs_tests_bin_PROGRAMS += %D%/getholes
+%C%_getholes_CFLAGS = $(AM_CFLAGS) $(LIBZFS_CFLAGS) $(LIBSPL_CFLAGS) -I$(top_srcdir)/include -I$(top_srcdir)/lib/libspl/include
+%C%_getholes_LDADD = \
+        libzfs.la \
+        libspl.la
+%C%_getholes_SOURCES = %D%/getholes.c
 
 scripts_zfs_tests_bin_PROGRAMS += %D%/libzfs_input_check
 %C%_libzfs_input_check_CPPFLAGS = $(AM_CPPFLAGS) -I$(top_srcdir)/include/os/@ac_system_l@/zfs
@@ -124,6 +134,14 @@ scripts_zfs_tests_bin_PROGRAMS += %D%/edonr_test %D%/skein_test \
 %C%_sha2_test_LDADD  = $(%C%_skein_test_LDADD)
 %C%_edonr_test_LDADD = $(%C%_skein_test_LDADD)
 %C%_blake3_test_LDADD = $(%C%_skein_test_LDADD)
+
+
+scripts_zfs_tests_bin_PROGRAMS += %D%/mkholes
+%C%_mkholes_CFLAGS = $(AM_CFLAGS) $(LIBSPL_CFLAGS)
+%C%_mkholes_SOURCES = %D%/mkholes.c
+%C%_mkholes_LDADD = \
+        libspl.la \
+	$(LIBSPL_LIBS)
 
 if BUILD_LINUX
 scripts_zfs_tests_bin_PROGRAMS += %D%/getversion

@@ -93,8 +93,8 @@ typedef struct zfs_fiemap_entry {
 
 typedef struct zfs_fiemap {
 	avl_tree_t fm_extent_trees[SPA_DVAS_PER_BP];	/* extent trees */
-	range_tree_t *fm_dirty_tree;	/* pending dirty ranges */
-	range_tree_t *fm_free_tree;	/* pending free ranges */
+	zfs_range_tree_t *fm_dirty_tree;	/* pending dirty ranges */
+	zfs_range_tree_t *fm_free_tree;	/* pending free ranges */
 
 	uint64_t fm_file_size;		/* cached inode size */
 	uint64_t fm_block_size;		/* cached dnp block size */

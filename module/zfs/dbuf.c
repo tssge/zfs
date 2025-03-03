@@ -5388,8 +5388,8 @@ dbuf_write(dbuf_dirty_record_t *dr, arc_buf_t *data, dmu_tx_t *tx)
  * to the provided dirty tree.  Clear these same ranges from the free tree.
  */
 static void
-dbuf_add_dirty_map(list_t *list, range_tree_t *dirty_tree,
-    range_tree_t *free_tree)
+dbuf_add_dirty_map(list_t *list, zfs_range_tree_t *dirty_tree,
+    zfs_range_tree_t *free_tree)
 {
 	dbuf_dirty_record_t *dr;
 
@@ -5410,8 +5410,8 @@ dbuf_add_dirty_map(list_t *list, range_tree_t *dirty_tree,
 				uint64_t offset = db->db.db_offset;
 				uint64_t length = db->db.db_size;
 
-				range_tree_add(dirty_tree, offset, length);
-				range_tree_clear(free_tree, offset, length);
+				zfs_range_tree_add(dirty_tree, offset, length);
+				zfs_range_tree_clear(free_tree, offset, length);
 			}
 		}
 	}
@@ -5424,22 +5424,22 @@ dbuf_add_dirty_map(list_t *list, range_tree_t *dirty_tree,
  * the dnode was potentially dirty.
  */
 int
-dbuf_generate_dirty_maps(dnode_t *dn, range_tree_t *dirty_tree,
-    range_tree_t *free_tree, uint64_t *syncing_txg, uint64_t open_txg)
+dbuf_generate_dirty_maps(dnode_t *dn, zfs_range_tree_t *dirty_tree,
+    zfs_range_tree_t *free_tree, uint64_t *syncing_txg, uint64_t open_txg)
 {
 	spa_t *spa = dn->dn_objset->os_spa;
 	dnode_phys_t *dnp = dn->dn_phys;
 	multilist_sublist_t *mls;
 	uint64_t txg, txgoff;
 
-	range_tree_vacate(dirty_tree, NULL, NULL);
-	range_tree_vacate(free_tree, NULL, NULL);
+	zfs_range_tree_vacate(dirty_tree, NULL, NULL);
+	zfs_range_tree_vacate(free_tree, NULL, NULL);
 
 	txg = *syncing_txg;
 	txgoff = txg & TXG_MASK;
 
 	mls = multilist_sublist_lock_obj(
-	    dn->dn_objset->os_dirty_dnodes[txgoff], dn);
+	    &dn->dn_objset->os_dirty_dnodes[txgoff], dn);
 	mutex_enter(&dn->dn_mtx);
 
 	uint32_t blksz = dnp->dn_datablkszsec << SPA_MINBLOCKSHIFT;
@@ -5450,7 +5450,7 @@ dbuf_generate_dirty_maps(dnode_t *dn, range_tree_t *dirty_tree,
 	 */
 	if (dn->dn_dirty_txg < txg) {
 		for (uint64_t i = txg; i <= open_txg; i++) {
-			ASSERTV(uint64_t txgoff = i & TXG_MASK);
+			ASSERT0(i & TXG_MASK);
 			ASSERT3P(dn->dn_free_ranges[txgoff], ==, NULL);
 			ASSERT(list_is_empty(&dn->dn_dirty_records[txgoff]));
 		}
@@ -5482,8 +5482,8 @@ dbuf_generate_dirty_maps(dnode_t *dn, range_tree_t *dirty_tree,
 
 	for (uint64_t i = txg; i <= open_txg; i++) {
 		uint64_t start, length;
-		range_tree_t *rt;
-		range_seg_t *rs;
+		zfs_range_tree_t *rt;
+		zfs_range_seg_t *rs;
 		zfs_btree_index_t where;
 
 		txg_verify(spa, i);
@@ -5498,13 +5498,13 @@ dbuf_generate_dirty_maps(dnode_t *dn, range_tree_t *dirty_tree,
 			for (rs = zfs_btree_first(&rt->rt_root, &where);
 			    rs != NULL;
 			    rs = zfs_btree_next(&rt->rt_root, &where, &where)) {
-				start = rs_get_start(rs, rt);
-				length = (rs_get_end(rs, rt) - start);
+				start = zfs_rs_get_start(rs, rt);
+				length = (zfs_rs_get_end(rs, rt) - start);
 
 				start = start << blkshift;
 				length = length << blkshift;
-				range_tree_add(free_tree, start, length);
-				range_tree_clear(dirty_tree, start, length);
+				zfs_range_tree_add(free_tree, start, length);
+				zfs_range_tree_clear(dirty_tree, start, length);
 			}
 		}
 
