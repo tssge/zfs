@@ -4899,9 +4899,9 @@ zfs_fiemap_create(uint64_t start, uint64_t len, uint64_t flags, uint64_t max)
 		    offsetof(struct zfs_fiemap_entry, fe_node));
 	}
 
-	fm->fm_dirty_tree = zfs_range_tree_create(NULL, RANGE_SEG64, NULL,
+	fm->fm_dirty_tree = zfs_range_tree_create(NULL, ZFS_RANGE_SEG64, NULL,
 	    start, 0);
-	fm->fm_free_tree = zfs_range_tree_create(NULL, RANGE_SEG64, NULL, start, 0);
+	fm->fm_free_tree = zfs_range_tree_create(NULL, ZFS_RANGE_SEG64, NULL, start, 0);
 
 	return (fm);
 }
