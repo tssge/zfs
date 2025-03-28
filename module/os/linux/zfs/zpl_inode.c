@@ -812,6 +812,44 @@ out:
 	return (error);
 }
 
+/*
+ * Valid FIEMAP flags:
+ * - FIEMAP_FLAG_SYNC    - Sync extents before reporting
+ * - FIEMAP_FLAG_XATTR   - Report extents used by xattrs (Unsupported)
+ * - FIEMAP_FLAG_COPIES  - Report all data copies (ZFS-only)
+ * - FIEMAP_FLAG_NOMERGE - Never merge blocks in to extents (ZFS-only)
+ */
+static int
+zpl_fiemap(struct inode *ip, struct fiemap_extent_info *fei,
+    __u64 start, __u64 len)
+{
+	zfs_fiemap_t *fm;
+	unsigned int flags = fei->fi_flags;
+	fstrans_cookie_t cookie;
+	int error = 0;
+
+	/* Incompatible ZFS-only flags masked out of compatibility check */
+	fei->fi_flags &= ~ZFS_FIEMAP_FLAGS_ZFS;
+
+	error = fiemap_prep(ip, fei, start, &len, ZFS_FIEMAP_FLAGS_COMPAT);
+	if (error)
+		return (error);
+
+	fm = zfs_fiemap_create(start, len, flags, fei->fi_extents_max);
+
+	cookie = spl_fstrans_mark();
+	error = -zfs_fiemap_assemble(ip, fm);
+	spl_fstrans_unmark(cookie);
+
+	if (error)
+		return (error);
+
+	error = -zfs_fiemap_fill(fm, fei, start, len);
+	zfs_fiemap_destroy(fm);
+
+	return (error);
+}
+
 const struct inode_operations zpl_inode_operations = {
 	.setattr	= zpl_setattr,
 	.getattr	= zpl_getattr,
@@ -824,6 +862,7 @@ const struct inode_operations zpl_inode_operations = {
 	.get_acl	= zpl_get_acl,
 #endif /* HAVE_GET_INODE_ACL */
 #endif /* CONFIG_FS_POSIX_ACL */
+	.fiemap         = zpl_fiemap,
 };
 
 const struct inode_operations zpl_dir_inode_operations = {
@@ -854,6 +893,11 @@ const struct inode_operations zpl_dir_inode_operations = {
 	.get_acl	= zpl_get_acl,
 #endif /* HAVE_GET_INODE_ACL */
 #endif /* CONFIG_FS_POSIX_ACL */
+#ifdef HAVE_RENAME2_OPERATIONS_WRAPPER
+	},
+	.rename2	= zpl_rename2,
+#endif
+	.fiemap         = zpl_fiemap,
 };
 
 const struct inode_operations zpl_symlink_inode_operations = {
@@ -861,6 +905,7 @@ const struct inode_operations zpl_symlink_inode_operations = {
 	.setattr	= zpl_setattr,
 	.getattr	= zpl_getattr,
 	.listxattr	= zpl_xattr_list,
+	.fiemap         = zpl_fiemap,
 };
 
 const struct inode_operations zpl_special_inode_operations = {
