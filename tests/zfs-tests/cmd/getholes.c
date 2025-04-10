@@ -34,7 +34,7 @@
 #if defined(SEEK_HOLE) && defined(SEEK_DATA)
 
 static void
-usage(char *msg, int exit_value)
+usage(const char *msg, int exit_value)
 {
 	(void) fprintf(stderr, "getholes [-dhnv] filename\n");
 	(void) fprintf(stderr, "%s\n", msg);
