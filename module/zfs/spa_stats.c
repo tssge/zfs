@@ -340,7 +340,7 @@ spa_frag_data(char *buf, size_t size, void *data)
 	// can be returned if all buckets are 0
 	buf[0] = 0;
 
-	for (int i = 0; i < RANGE_TREE_HISTOGRAM_SIZE; i++) {
+	for (int i = 0; i < ZFS_RANGE_TREE_HISTOGRAM_SIZE; i++) {
 		if (mc->mc_histogram[i] > 0) {
 			res = snprintf(buf + offset, size, "%d %llu\n", i,
 			    (u_longlong_t)mc->mc_histogram[i]);
