@@ -5434,7 +5434,6 @@ dbuf_generate_dirty_maps(dnode_t *dn, zfs_range_tree_t *dirty_tree,
 #ifdef ZFS_DEBUG
 	spa_t *spa = dn->dn_objset->os_spa;
 #endif
-	dnode_phys_t *dnp = dn->dn_phys;
 	multilist_sublist_t *mls;
 	uint64_t txg, txgoff;
 
@@ -5447,8 +5446,6 @@ dbuf_generate_dirty_maps(dnode_t *dn, zfs_range_tree_t *dirty_tree,
 	mls = multilist_sublist_lock_obj(
 	    &dn->dn_objset->os_dirty_dnodes[txgoff], dn);
 	mutex_enter(&dn->dn_mtx);
-
-	uint32_t blksz = dnp->dn_datablkszsec << SPA_MINBLOCKSHIFT;
 
 	/*
 	 * Fast path.  The dnode has not been dirtied since it was last synced
@@ -5496,9 +5493,6 @@ dbuf_generate_dirty_maps(dnode_t *dn, zfs_range_tree_t *dirty_tree,
 		txg_verify(spa, i);
 #endif
 		txgoff = i & TXG_MASK;
-
-		if (dn->dn_next_blksz[txgoff] != 0)
-			blksz = dn->dn_next_blksz[txgoff];
 
 		rt = dn->dn_free_ranges[txgoff];
 		if (rt != NULL) {
