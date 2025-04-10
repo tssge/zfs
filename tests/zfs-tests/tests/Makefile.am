@@ -275,6 +275,7 @@ nobase_dist_datadir_zfs_tests_tests_DATA += \
 	functional/events/events.cfg \
 	functional/events/events_common.kshlib \
 	functional/fault/fault.cfg \
+	functional/fiemap/fiemap.cfg \
 	functional/gang_blocks/gang_blocks.kshlib \
 	functional/grow/grow.cfg \
 	functional/history/history.cfg \
