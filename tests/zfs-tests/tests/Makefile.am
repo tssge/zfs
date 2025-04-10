@@ -1560,6 +1560,17 @@ nobase_dist_datadir_zfs_tests_tests_SCRIPTS += \
 	functional/features/large_dnode/large_dnode_008_pos.ksh \
 	functional/features/large_dnode/large_dnode_009_pos.ksh \
 	functional/features/large_dnode/setup.ksh \
+	functional/fiemap/cleanup.ksh \
+	functional/fiemap/fiemap.cfg \
+	functional/fiemap/fiemap_copies.ksh \
+	functional/fiemap/fiemap_dealloc.ksh \
+	functional/fiemap/fiemap_flags.ksh \
+	functional/fiemap/fiemap_free.ksh \
+	functional/fiemap/fiemap_holes_sanity.ksh \
+	functional/fiemap/fiemap.kshlib \
+	functional/fiemap/fiemap_nomerge.ksh \
+	functional/fiemap/fiemap_sync.ksh \
+	functional/fiemap/setup.ksh \
 	functional/gang_blocks/cleanup.ksh \
 	functional/gang_blocks/gang_blocks_redundant.ksh \
 	functional/gang_blocks/setup.ksh \

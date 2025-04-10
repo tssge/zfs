@@ -49,6 +49,12 @@ scripts_zfs_tests_bin_PROGRAMS += %D%/draid
 	libnvpair.la
 %C%_draid_LDADD += $(ZLIB_LIBS)
 
+scripts_zfs_tests_bin_PROGRAMS += %D%/fiemap
+%C%_fiemap_CFLAGS = $(AM_CFLAGS) $(ZLIB_CFLAGS)
+%C%_fiemap_LDADD = \
+	libavl.la \
+	libzpool.la
+
 dist_noinst_DATA += %D%/file/file_common.h
 scripts_zfs_tests_bin_PROGRAMS += %D%/file_append %D%/file_check %D%/file_trunc %D%/file_write %D%/largest_file %D%/randwritecomp
 %C%_file_append_SOURCES   = %D%/file/file_append.c
@@ -58,6 +64,10 @@ scripts_zfs_tests_bin_PROGRAMS += %D%/file_append %D%/file_check %D%/file_trunc 
 %C%_largest_file_SOURCES  = %D%/file/largest_file.c
 %C%_randwritecomp_SOURCES = %D%/file/randwritecomp.c
 
+scripts_zfs_tests_bin_PROGRAMS += %D%/getholes
+%C%_getholes_LDADD = \
+	libzfs.la \
+	libspl.la
 
 scripts_zfs_tests_bin_PROGRAMS += %D%/libzfs_input_check
 %C%_libzfs_input_check_CPPFLAGS = $(AM_CPPFLAGS) -I$(top_srcdir)/include/os/@ac_system_l@/zfs
@@ -70,7 +80,6 @@ scripts_zfs_tests_bin_PROGRAMS += %D%/manipulate_user_buffer
 
 scripts_zfs_tests_bin_PROGRAMS += %D%/mkbusy %D%/mkfile %D%/mkfiles %D%/mktree
 %C%_mkfile_LDADD = $(LTLIBINTL)
-
 
 scripts_zfs_tests_bin_PROGRAMS += %D%/mmap_exec %D%/mmap_seek %D%/mmap_sync %D%/mmapwrite %D%/readmmap
 %C%_mmapwrite_LDADD = -lpthread
@@ -130,7 +139,9 @@ scripts_zfs_tests_bin_PROGRAMS += %D%/statx
 scripts_zfs_tests_bin_PROGRAMS += %D%/xattrtest
 scripts_zfs_tests_bin_PROGRAMS += %D%/zed_fd_spill-zedlet
 scripts_zfs_tests_bin_PROGRAMS += %D%/idmap_util
+scripts_zfs_tests_bin_PROGRAMS += %D%/mkholes
 
+%C%_mkholes_LDADD = libspl.la
 %C%_idmap_util_LDADD = libspl.la
 
 dist_noinst_DATA += %D%/linux_dos_attributes/dos_attributes.h
