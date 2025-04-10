@@ -65,7 +65,7 @@ typedef struct fiemap_args {
 } fiemap_args_t;
 
 static int
-usage(char *msg, int exit_value)
+usage(const char *msg, int exit_value)
 {
 	(void) fprintf(stderr, "fiemap [-achsv?] "
 	    "[[-DH] <offset:length:refs>] [-F <flags:[=<>count>]\n"
