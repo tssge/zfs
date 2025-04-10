@@ -264,12 +264,12 @@ fiemap_verify_extents(fiemap_args_t *fa, verify_tree_type_t type)
 {
 	avl_tree_t *t = &fa->fa_verify_trees[type];
 	struct fiemap_extent *ext;
-	range_tree_t *rt;
+	zfs_range_tree_t *rt;
 	boolean_t is_data = (type == VERIFY_DATA_TREE);
 	boolean_t is_hole = (type == VERIFY_HOLE_TREE);
 	int error = 0;
 
-	rt = range_tree_create(NULL, NULL);
+	rt = zfs_range_tree_create(NULL, ZFS_RANGE_SEG64, NULL, 0, 0);
 	if (rt == NULL)
 		return (ENOMEM);
 
@@ -322,8 +322,8 @@ fiemap_verify_extents(fiemap_args_t *fa, verify_tree_type_t type)
 		}
 
 		space_reftree_generate_map(&ht, rt, 1);
-		range_tree_walk(rt, fiemap_verify_extent_dec, t);
-		range_tree_vacate(rt, NULL, NULL);
+		zfs_range_tree_walk(rt, fiemap_verify_extent_dec, t);
+		zfs_range_tree_vacate(rt, NULL, NULL);
 
 		space_reftree_destroy(&ht);
 	}
@@ -331,7 +331,7 @@ fiemap_verify_extents(fiemap_args_t *fa, verify_tree_type_t type)
 	space_reftree_generate_map(t, rt, 1);
 
 	fa->fa_verify_index = type;
-	range_tree_walk(rt, fiemap_verify_count_cb, fa);
+	zfs_range_tree_walk(rt, fiemap_verify_count_cb, fa);
 
 	if (fa->fa_verbose == B_TRUE && fa->fa_verify_sizes[type] > 0) {
 		printf("----- Missing %s Tree Extents -----\n",
@@ -339,11 +339,11 @@ fiemap_verify_extents(fiemap_args_t *fa, verify_tree_type_t type)
 		printf("%-4s %-39s\n", "ID", "Logical (Start-End Length)");
 
 		fa->fa_verify_sizes[type] = 0;
-		range_tree_walk(rt, fiemap_verify_print_cb, fa);
+		zfs_range_tree_walk(rt, fiemap_verify_print_cb, fa);
 	}
 
-	range_tree_vacate(rt, NULL, NULL);
-	range_tree_destroy(rt);
+	zfs_range_tree_vacate(rt, NULL, NULL);
+	zfs_range_tree_destroy(rt);
 
 	/*
 	 * There are additional logical extents reported by FIEMAP which
@@ -500,23 +500,23 @@ fiemap_verify_device(fiemap_args_t *fa)
 static int
 fiemap_verify_size(fiemap_args_t *fa)
 {
-	range_tree_t *rt = range_tree_create(NULL, NULL);
+	zfs_range_tree_t *rt = zfs_range_tree_create(NULL, ZFS_RANGE_SEG64, NULL, 0, 0);
 	int error = 0;
 
 	for (int i = 0; i < fa->fa_fiemap->fm_mapped_extents; i++) {
 		struct fiemap_extent *extent = &fa->fa_fiemap->fm_extents[i];
-		range_tree_add(rt, extent->fe_logical, extent->fe_length);
+		zfs_range_tree_add(rt, extent->fe_logical, extent->fe_length);
 	}
 
-	if (range_tree_space(rt) != fa->fa_statbuf.st_size) {
+	if (zfs_range_tree_space(rt) != fa->fa_statbuf.st_size) {
 		printf("The reported extents cover %llu / %llu bytes of "
-		    "the file\n", (u_longlong_t)range_tree_space(rt),
+		    "the file\n", (u_longlong_t)zfs_range_tree_space(rt),
 		    (u_longlong_t)fa->fa_statbuf.st_size);
 		error = EDOM;
 	}
 
-	range_tree_vacate(rt, NULL, NULL);
-	range_tree_destroy(rt);
+	zfs_range_tree_vacate(rt, NULL, NULL);
+	zfs_range_tree_destroy(rt);
 
 	return (error);
 }
@@ -583,7 +583,7 @@ fiemap_init(fiemap_args_t *fa)
 {
 	memset(fa, 0, sizeof (fiemap_args_t));
 
-	range_tree_init();
+	zfs_btree_init();
 	space_reftree_create(&fa->fa_verify_trees[VERIFY_DATA_TREE]);
 	space_reftree_create(&fa->fa_verify_trees[VERIFY_HOLE_TREE]);
 }
@@ -596,7 +596,7 @@ fiemap_fini(fiemap_args_t *fa)
 
 	space_reftree_destroy(&fa->fa_verify_trees[VERIFY_DATA_TREE]);
 	space_reftree_destroy(&fa->fa_verify_trees[VERIFY_HOLE_TREE]);
-	range_tree_fini();
+	zfs_btree_fini();
 }
 
 static int
