@@ -31,7 +31,7 @@ verify_runnable "both"
 function cleanup
 {
 	rm -f $FIEMAP_FILE $FIEMAP_FILE2
-	log_must set_tunable64 metaslab_force_ganging $((2**24 + 1))
+	log_must set_tunable64 METASLAB_FORCE_GANGING $((2**24 + 1))
 }
 
 log_assert "FIEMAP reports all known flags"
@@ -119,11 +119,11 @@ fiemap_remove
 
 # Gang blocks
 log_note "Verify 'unknown' for gang blocks"
-log_must set_tunable64 metaslab_force_ganging $((2**14))
+log_must set_tunable64 METASLAB_FORCE_GANGING $((2**14))
 fiemap_write $((2**20)) 64
 fiemap_verify -s -F "unknown:>0"
 fiemap_remove
-log_must set_tunable64 metaslab_force_ganging $((2**24 + 1))
+log_must set_tunable64 METASLAB_FORCE_GANGING $((2**24 + 1))
 
 # Embedded blocks
 log_note "Verify 'not-aligned,data-inline' for embedding blocks"

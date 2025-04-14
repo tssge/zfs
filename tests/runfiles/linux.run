@@ -134,7 +134,7 @@ tests = ['large_dnode_002_pos', 'large_dnode_006_pos', 'large_dnode_008_pos']
 tags = ['functional', 'features', 'large_dnode']
 
 [tests/functional/fiemap:Linux]
-tests = ['fiemap_sync', 'fiemap_flags', 'fiemap_delalloc', 'fiemap_free',
+tests = ['fiemap_sync', 'fiemap_flags', 'fiemap_dealloc', 'fiemap_free',
     'fiemap_copies', 'fiemap_nomerge', 'fiemap_holes_sanity']
 tags = ['functional', 'fiemap']
 
