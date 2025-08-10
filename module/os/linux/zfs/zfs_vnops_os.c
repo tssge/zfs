@@ -4392,8 +4392,10 @@ zfs_fiemap_cb(spa_t *spa, zilog_t *zilog, const blkptr_t *bp,
 
 			if (BP_IS_ENCRYPTED(bp))
 				fe->fe_flags |= FIEMAP_EXTENT_DATA_ENCRYPTED;
-			if (BP_GET_COMPRESS(bp) != ZIO_COMPRESS_OFF)
+			if (BP_GET_COMPRESS(bp) != ZIO_COMPRESS_OFF) {
 				fe->fe_flags |= FIEMAP_EXTENT_ENCODED;
+				fe->fe_flags |= FIEMAP_EXTENT_DATA_COMPRESSED;
+			}
 		} else {
 			if (i >= BP_GET_NDVAS(bp)) {
 				kmem_free(fe, sizeof (zfs_fiemap_entry_t));
@@ -4402,8 +4404,10 @@ zfs_fiemap_cb(spa_t *spa, zilog_t *zilog, const blkptr_t *bp,
 
 			if (BP_IS_ENCRYPTED(bp))
 				fe->fe_flags |= FIEMAP_EXTENT_DATA_ENCRYPTED;
-			if (BP_GET_COMPRESS(bp) != ZIO_COMPRESS_OFF)
+			if (BP_GET_COMPRESS(bp) != ZIO_COMPRESS_OFF) {
 				fe->fe_flags |= FIEMAP_EXTENT_ENCODED;
+				fe->fe_flags |= FIEMAP_EXTENT_DATA_COMPRESSED;
+			}
 			if (BP_GET_DEDUP(bp))
 				fe->fe_flags |= FIEMAP_EXTENT_SHARED;
 
@@ -4512,6 +4516,12 @@ zfs_fiemap_visit_indirect(spa_t *spa, const dnode_phys_t *dnp,
 		int epb = BP_GET_LSIZE(bp) >> SPA_BLKPTRSHIFT;
 		arc_buf_t *buf;
 
+		/*
+		 * Use CANFAIL to avoid excessive ARC pressure on large data.
+		 * If we can't read a block, skip it rather than causing memory
+		 * pressure issues. This addresses ARC usage concerns from
+		 * PR #9554 testing.
+		 */
 		error = arc_read(NULL, spa, bp, arc_getbuf_func, &buf,
 		    ZIO_PRIORITY_ASYNC_READ, ZIO_FLAG_CANFAIL, &flags, zb);
 		if (error)
@@ -5042,7 +5052,8 @@ zfs_fiemap_create(uint64_t start, uint64_t len, uint64_t flags, uint64_t max)
 
 	fm->fm_dirty_tree = zfs_range_tree_create(NULL, ZFS_RANGE_SEG64, NULL,
 	    start, 0);
-	fm->fm_free_tree = zfs_range_tree_create(NULL, ZFS_RANGE_SEG64, NULL, start, 0);
+	fm->fm_free_tree = zfs_range_tree_create(NULL, ZFS_RANGE_SEG64, NULL,
+	    start, 0);
 
 	return (fm);
 }

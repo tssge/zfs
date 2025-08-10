@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: CDDL-1.0
 /*
  * CDDL HEADER START
  *
@@ -63,6 +64,13 @@
  */
 #ifndef FIEMAP_EXTENT_SHARED
 #define	FIEMAP_EXTENT_SHARED	0x00002000
+#endif
+
+/*
+ * Data is compressed by fs. Sets EXTENT_ENCODED. Future kernel support.
+ */
+#ifndef FIEMAP_EXTENT_DATA_COMPRESSED
+#define	FIEMAP_EXTENT_DATA_COMPRESSED	0x00000040
 #endif
 
 #ifdef _KERNEL
