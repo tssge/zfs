@@ -871,7 +871,7 @@ const struct inode_operations zpl_inode_operations = {
 	.get_acl	= zpl_get_acl,
 #endif /* HAVE_GET_INODE_ACL */
 #endif /* CONFIG_FS_POSIX_ACL */
-	.fiemap         = zpl_fiemap,
+	.fiemap		= zpl_fiemap,
 };
 
 const struct inode_operations zpl_dir_inode_operations = {
@@ -906,7 +906,7 @@ const struct inode_operations zpl_dir_inode_operations = {
 	},
 	.rename2	= zpl_rename2,
 #endif
-	.fiemap         = zpl_fiemap,
+	.fiemap		= zpl_fiemap,
 };
 
 const struct inode_operations zpl_symlink_inode_operations = {
@@ -914,7 +914,7 @@ const struct inode_operations zpl_symlink_inode_operations = {
 	.setattr	= zpl_setattr,
 	.getattr	= zpl_getattr,
 	.listxattr	= zpl_xattr_list,
-	.fiemap         = zpl_fiemap,
+	.fiemap		= zpl_fiemap,
 };
 
 const struct inode_operations zpl_special_inode_operations = {

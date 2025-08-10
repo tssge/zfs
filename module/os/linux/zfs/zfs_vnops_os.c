@@ -4517,10 +4517,10 @@ zfs_fiemap_visit_indirect(spa_t *spa, const dnode_phys_t *dnp,
 		arc_buf_t *buf;
 
 		/*
-		 * Use CANFAIL to avoid excessive ARC pressure on large datasets.
+		 * Use CANFAIL to avoid excessive ARC pressure on large data.
 		 * If we can't read a block, skip it rather than causing memory
-		 * pressure issues. This addresses the ARC usage concerns noted
-		 * in PR #9554 testing.
+		 * pressure issues. This addresses ARC usage concerns from
+		 * PR #9554 testing.
 		 */
 		error = arc_read(NULL, spa, bp, arc_getbuf_func, &buf,
 		    ZIO_PRIORITY_ASYNC_READ, ZIO_FLAG_CANFAIL, &flags, zb);
@@ -5052,7 +5052,8 @@ zfs_fiemap_create(uint64_t start, uint64_t len, uint64_t flags, uint64_t max)
 
 	fm->fm_dirty_tree = zfs_range_tree_create(NULL, ZFS_RANGE_SEG64, NULL,
 	    start, 0);
-	fm->fm_free_tree = zfs_range_tree_create(NULL, ZFS_RANGE_SEG64, NULL, start, 0);
+	fm->fm_free_tree = zfs_range_tree_create(NULL, ZFS_RANGE_SEG64, NULL,
+	    start, 0);
 
 	return (fm);
 }
