@@ -4512,6 +4512,12 @@ zfs_fiemap_visit_indirect(spa_t *spa, const dnode_phys_t *dnp,
 		int epb = BP_GET_LSIZE(bp) >> SPA_BLKPTRSHIFT;
 		arc_buf_t *buf;
 
+		/*
+		 * Use CANFAIL to avoid excessive ARC pressure on large datasets.
+		 * If we can't read a block, skip it rather than causing memory
+		 * pressure issues. This addresses the ARC usage concerns noted
+		 * in PR #9554 testing.
+		 */
 		error = arc_read(NULL, spa, bp, arc_getbuf_func, &buf,
 		    ZIO_PRIORITY_ASYNC_READ, ZIO_FLAG_CANFAIL, &flags, zb);
 		if (error)
