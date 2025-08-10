@@ -4392,8 +4392,10 @@ zfs_fiemap_cb(spa_t *spa, zilog_t *zilog, const blkptr_t *bp,
 
 			if (BP_IS_ENCRYPTED(bp))
 				fe->fe_flags |= FIEMAP_EXTENT_DATA_ENCRYPTED;
-			if (BP_GET_COMPRESS(bp) != ZIO_COMPRESS_OFF)
+			if (BP_GET_COMPRESS(bp) != ZIO_COMPRESS_OFF) {
 				fe->fe_flags |= FIEMAP_EXTENT_ENCODED;
+				fe->fe_flags |= FIEMAP_EXTENT_DATA_COMPRESSED;
+			}
 		} else {
 			if (i >= BP_GET_NDVAS(bp)) {
 				kmem_free(fe, sizeof (zfs_fiemap_entry_t));
@@ -4402,8 +4404,10 @@ zfs_fiemap_cb(spa_t *spa, zilog_t *zilog, const blkptr_t *bp,
 
 			if (BP_IS_ENCRYPTED(bp))
 				fe->fe_flags |= FIEMAP_EXTENT_DATA_ENCRYPTED;
-			if (BP_GET_COMPRESS(bp) != ZIO_COMPRESS_OFF)
+			if (BP_GET_COMPRESS(bp) != ZIO_COMPRESS_OFF) {
 				fe->fe_flags |= FIEMAP_EXTENT_ENCODED;
+				fe->fe_flags |= FIEMAP_EXTENT_DATA_COMPRESSED;
+			}
 			if (BP_GET_DEDUP(bp))
 				fe->fe_flags |= FIEMAP_EXTENT_SHARED;
 
