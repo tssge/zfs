@@ -69,8 +69,10 @@ nodist_libicp_la_SOURCES += \
 	module/icp/asm-x86_64/aes/aes_aesni.S \
 	module/icp/asm-x86_64/modes/gcm_pclmulqdq.S \
 	module/icp/asm-x86_64/modes/aesni-gcm-x86_64.S \
-	module/icp/asm-x86_64/modes/aesni-gcm-avx2-vaes.S \
 	module/icp/asm-x86_64/modes/ghash-x86_64.S \
+	module/icp/asm-x86_64/modes/isalc_gcm128_sse.S \
+	module/icp/asm-x86_64/modes/isalc_gcm192_sse.S \
+	module/icp/asm-x86_64/modes/isalc_gcm256_sse.S \
 	module/icp/asm-x86_64/sha2/sha256-x86_64.S \
 	module/icp/asm-x86_64/sha2/sha512-x86_64.S \
 	module/icp/asm-x86_64/blake3/blake3_avx2.S \
