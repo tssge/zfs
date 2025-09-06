@@ -46,8 +46,10 @@
 #define	IMPL_CYCLE	(UINT32_MAX-1)
 #ifdef CAN_USE_GCM_ASM_AVX
 #define	IMPL_AVX	(UINT32_MAX-2)
+#define	GCM_IMPL_AVX	IMPL_AVX
 #if CAN_USE_GCM_ASM >= 2
 #define	IMPL_AVX2	(UINT32_MAX-3)
+#define	GCM_IMPL_AVX2	IMPL_AVX2
 #endif
 #endif
 #ifdef CAN_USE_GCM_ASM_SSE
@@ -1106,7 +1108,7 @@ gcm_impl_init(void)
 #if CAN_USE_GCM_ASM >= 2
 	if (gcm_avx2_will_work()) {
 		if (GCM_IMPL_READ(user_sel_impl) == IMPL_FASTEST) {
-			gcm_use_impl(GCM_IMPL_AVX2);
+			gcm_set_simd_impl(GSI_OSSL_AVX2);
 		}
 	} else
 #endif
@@ -1183,14 +1185,15 @@ gcm_impl_set(const char *val)
 			}
 #ifdef CAN_USE_GCM_ASM_AVX
 		/* Ignore avx implementation if it won't work. */
+		if (gcm_impl_opts[i].sel == IMPL_AVX && !gcm_avx_will_work()) {
+			continue;
+		}
+#if CAN_USE_GCM_ASM >= 2
 		if (gcm_impl_opts[i].sel == IMPL_AVX2 &&
 		    !gcm_avx2_will_work()) {
 			continue;
 		}
 #endif
-		if (gcm_impl_opts[i].sel == IMPL_AVX && !gcm_avx_will_work()) {
-			continue;
-		}
 #endif /* ifdef CAN_USE_GCM_ASM_AVX */
 #endif /* ifdef CAN_USE_GCM_ASM */
 		if (strcmp(req_name, gcm_impl_opts[i].name) == 0) {
@@ -1463,15 +1466,15 @@ extern void ASMABI gcm_ghash_vpclmulqdq_avx2(uint64_t ghash[2],
 #endif
 static inline void GHASH_AVX(gcm_ctx_t *ctx, const uint8_t *in, size_t len)
 {
-	switch (ctx->impl) {
+	switch (ctx->gcm_simd_impl) {
 #if CAN_USE_GCM_ASM >= 2
-		case GCM_IMPL_AVX2:
+		case GSI_OSSL_AVX2:
 			gcm_ghash_vpclmulqdq_avx2(ctx->gcm_ghash,
 			    (const uint64_t *)ctx->gcm_Htable, in, len);
 			break;
 #endif
 
-		case GCM_IMPL_AVX:
+		case GSI_OSSL_AVX:
 			gcm_ghash_avx(ctx->gcm_ghash,
 			    (const uint64_t *)ctx->gcm_Htable, in, len);
 			break;
@@ -1931,7 +1934,7 @@ gcm_decrypt_final_avx(gcm_ctx_t *ctx, crypto_data_t *out, size_t block_size)
  * Initialize the GCM params H, Htabtle and the counter block. Save the
  * initial counter block.
  */
-static void
+static int
 gcm_init_avx(gcm_ctx_t *ctx, const uint8_t *iv, size_t iv_len,
     const uint8_t *auth_data, size_t auth_data_len, size_t block_size)
 {
@@ -2016,6 +2019,7 @@ gcm_init_avx(gcm_ctx_t *ctx, const uint8_t *iv, size_t iv_len,
 	}
 	clear_fpu_regs();
 	kfpu_end();
+	return (CRYPTO_SUCCESS);
 }
 #endif /* ifdef CAN_USE_GCM_ASM_AVX */
 

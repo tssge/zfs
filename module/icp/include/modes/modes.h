@@ -45,13 +45,20 @@ extern "C" {
  */
 #if defined(__x86_64__) && defined(HAVE_AES) && defined(HAVE_PCLMULQDQ)
 	/* XXXX: does AES + PCLMULQDQ really imply at least SSE4_1? */
-#define	CAN_USE_GCM_ASM
+#if defined(HAVE_AVX2)
+#define	CAN_USE_GCM_ASM 2
+#else
+#define	CAN_USE_GCM_ASM 1
+#endif
 #if defined(HAVE_SSE4_1)
 #define	CAN_USE_GCM_ASM_SSE
 #endif
 #if defined(HAVE_AVX)
 #define	CAN_USE_GCM_ASM_AVX
 extern boolean_t gcm_avx_can_use_movbe;
+#endif
+#if defined(HAVE_AVX2)
+#define	CAN_USE_GCM_ASM_AVX2
 #endif
 #endif /* defined(__x86_64__) && defined(HAVE_AES) && defined(HAVE_PCLMULQDQ) */
 
@@ -148,6 +155,7 @@ typedef struct ccm_ctx {
 	typedef enum gcm_simd_impl {
 		GSI_NONE,
 		GSI_OSSL_AVX,
+		GSI_OSSL_AVX2,
 		GSI_ISALC_SSE,
 		GSI_NUM_IMPL
 	} gcm_simd_impl_t;
