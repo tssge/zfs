@@ -1533,6 +1533,7 @@ gcm_incr_counter_block_by(gcm_ctx_t *ctx, int n)
 	ctx->gcm_cb[1] = (ctx->gcm_cb[1] & ~counter_mask) | counter;
 }
 
+#ifdef CAN_USE_GCM_ASM_AVX
 static size_t aesni_gcm_encrypt_avx(const uint8_t *in, uint8_t *out,
     size_t len, const void *key, uint64_t *iv, const uint64_t *Htable,
     uint64_t *Xip)
@@ -1540,6 +1541,7 @@ static size_t aesni_gcm_encrypt_avx(const uint8_t *in, uint8_t *out,
 	(void) Htable;
 	return (aesni_gcm_encrypt(in, out, len, key, iv, Xip));
 }
+#endif /* ifdef CAN_USE_GCM_ASM_AVX */
 
 #if CAN_USE_GCM_ASM >= 2
 // kSizeTWithoutLower4Bits is a mask that can be used to zero the lower four
@@ -1795,6 +1797,7 @@ gcm_encrypt_final_avx(gcm_ctx_t *ctx, crypto_data_t *out, size_t block_size)
 	return (CRYPTO_SUCCESS);
 }
 
+#ifdef CAN_USE_GCM_ASM_AVX
 static size_t aesni_gcm_decrypt_avx(const uint8_t *in, uint8_t *out,
     size_t len, const void *key, uint64_t *iv, const uint64_t *Htable,
     uint64_t *Xip)
@@ -1802,6 +1805,7 @@ static size_t aesni_gcm_decrypt_avx(const uint8_t *in, uint8_t *out,
 	(void) Htable;
 	return (aesni_gcm_decrypt(in, out, len, key, iv, Xip));
 }
+#endif /* ifdef CAN_USE_GCM_ASM_AVX */
 
 #if CAN_USE_GCM_ASM >= 2
 static size_t aesni_gcm_decrypt_avx2(const uint8_t *in, uint8_t *out,
