@@ -62,15 +62,6 @@ static uint32_t user_sel_impl = IMPL_FASTEST;
 #ifdef CAN_USE_GCM_ASM_AVX
 /* Does the architecture we run on support the MOVBE instruction? */
 boolean_t gcm_avx_can_use_movbe = B_FALSE;
-<<<<<<< HEAD
-/*
- * Whether to use the optimized openssl gcm and ghash implementations.
- */
-static gcm_impl gcm_impl_used = GCM_IMPL_GENERIC;
-#define	GCM_IMPL_USED	(*(volatile gcm_impl *)&gcm_impl_used)
-=======
->>>>>>> 6b7e2bbd23 (ICP: AES_GCM: Add sse4 asm routines, first stab)
-
 extern boolean_t ASMABI atomic_toggle_boolean_nv(volatile boolean_t *);
 #endif
 /*
@@ -283,12 +274,6 @@ static inline int gcm_decrypt_final_isalc(gcm_ctx_t *, crypto_data_t *);
 
 #ifdef CAN_USE_GCM_ASM_AVX
 static inline boolean_t gcm_avx_will_work(void);
-<<<<<<< HEAD
-static inline boolean_t gcm_avx2_will_work(void);
-static inline void gcm_use_impl(gcm_impl impl);
-static inline gcm_impl gcm_toggle_impl(void);
-=======
->>>>>>> 6b7e2bbd23 (ICP: AES_GCM: Add sse4 asm routines, first stab)
 
 static int gcm_mode_encrypt_contiguous_blocks_avx(gcm_ctx_t *, const uint8_t *,
 	size_t, crypto_data_t *, size_t);
@@ -312,16 +297,12 @@ gcm_mode_encrypt_contiguous_blocks(gcm_ctx_t *ctx, char *data, size_t length,
     void (*xor_block)(uint8_t *, uint8_t *))
 {
 #ifdef CAN_USE_GCM_ASM
-<<<<<<< HEAD
-	if (ctx->impl != GCM_IMPL_GENERIC)
-=======
 	if (is_isalc_impl(ctx->gcm_simd_impl) == B_TRUE)
 		return (gcm_mode_encrypt_contiguous_blocks_isalc(
 			ctx, (const uint8_t *)data, length, out));
 
 #ifdef CAN_USE_GCM_ASM_AVX
 	if (ctx->gcm_simd_impl == GSI_OSSL_AVX)
->>>>>>> 6b7e2bbd23 (ICP: AES_GCM: Add sse4 asm routines, first stab)
 		return (gcm_mode_encrypt_contiguous_blocks_avx(
 			ctx, (const uint8_t *)data, length, out, block_size));
 #endif
@@ -443,15 +424,11 @@ gcm_encrypt_final(gcm_ctx_t *ctx, crypto_data_t *out, size_t block_size,
 {
 	(void) copy_block;
 #ifdef CAN_USE_GCM_ASM
-<<<<<<< HEAD
-	if (ctx->impl != GCM_IMPL_GENERIC)
-=======
 	if (is_isalc_impl(ctx->gcm_simd_impl) == B_TRUE)
 		return (gcm_encrypt_final_isalc(ctx, out));
 
 #ifdef CAN_USE_GCM_ASM_AVX
 	if (ctx->gcm_simd_impl == GSI_OSSL_AVX)
->>>>>>> 6b7e2bbd23 (ICP: AES_GCM: Add sse4 asm routines, first stab)
 		return (gcm_encrypt_final_avx(ctx, out, block_size));
 #endif
 
@@ -620,15 +597,11 @@ gcm_decrypt_final(gcm_ctx_t *ctx, crypto_data_t *out, size_t block_size,
     void (*xor_block)(uint8_t *, uint8_t *))
 {
 #ifdef CAN_USE_GCM_ASM
-<<<<<<< HEAD
-	if (ctx->impl != GCM_IMPL_GENERIC)
-=======
 	if (is_isalc_impl(ctx->gcm_simd_impl) == B_TRUE)
 		return (gcm_decrypt_final_isalc(ctx, out));
 
 #ifdef CAN_USE_GCM_ASM_AVX
 	if (ctx->gcm_simd_impl == GSI_OSSL_AVX)
->>>>>>> 6b7e2bbd23 (ICP: AES_GCM: Add sse4 asm routines, first stab)
 		return (gcm_decrypt_final_avx(ctx, out, block_size));
 #endif
 
@@ -893,19 +866,6 @@ gcm_init_ctx(gcm_ctx_t *gcm_ctx, char *param,
 	    ((aes_key_t *)gcm_ctx->gcm_keysched)->ops->needs_byteswap;
 
 	if (GCM_IMPL_READ(icp_gcm_impl) != IMPL_CYCLE) {
-<<<<<<< HEAD
-		gcm_ctx->impl = GCM_IMPL_USED;
-	} else {
-		/*
-		 * Handle the "cycle" implementation by creating different
-		 * contexts, one per implementation.
-		 */
-		gcm_ctx->impl = gcm_toggle_impl();
-
-		/* The AVX impl. doesn't handle byte swapped key schedules. */
-		if (needs_bswap == B_TRUE) {
-			gcm_ctx->impl = GCM_IMPL_GENERIC;
-=======
 		gcm_ctx->gcm_simd_impl = GCM_SIMD_IMPL_READ;
 	} else {
 		/*
@@ -922,18 +882,13 @@ gcm_init_ctx(gcm_ctx_t *gcm_ctx, char *param,
 		aes_key_t *ks = (aes_key_t *)gcm_ctx->gcm_keysched;
 		if (ks->ops->needs_byteswap == B_TRUE) {
 			gcm_ctx->gcm_simd_impl = GSI_NONE;
->>>>>>> 6b7e2bbd23 (ICP: AES_GCM: Add sse4 asm routines, first stab)
 		}
 #ifdef CAN_USE_GCM_ASM_AVX
 		/*
 		 * If this is an AVX context, use the MOVBE and the BSWAP
 		 * variants alternately.
 		 */
-<<<<<<< HEAD
-		if (gcm_ctx->impl == GCM_IMPL_AVX &&
-=======
 		if (gcm_ctx->gcm_simd_impl == GSI_OSSL_AVX &&
->>>>>>> 6b7e2bbd23 (ICP: AES_GCM: Add sse4 asm routines, first stab)
 		    zfs_movbe_available() == B_TRUE) {
 			(void) atomic_toggle_boolean_nv(
 			    (volatile boolean_t *)&gcm_avx_can_use_movbe);
@@ -945,22 +900,12 @@ gcm_init_ctx(gcm_ctx_t *gcm_ctx, char *param,
 	 * still they could be created by the aes generic implementation.
 	 * Make sure not to use them since we'll corrupt data if we do.
 	 */
-<<<<<<< HEAD
-	if (gcm_ctx->impl != GCM_IMPL_GENERIC && needs_bswap == B_TRUE) {
-		gcm_ctx->impl = GCM_IMPL_GENERIC;
-
-		cmn_err_once(CE_WARN,
-		    "ICP: Can't use the aes generic or cycle implementations "
-		    "in combination with the gcm avx or avx2-vaes "
-		    "implementation!");
-=======
 	if (gcm_ctx->gcm_simd_impl != GSI_NONE && needs_bswap == B_TRUE) {
 		gcm_ctx->gcm_simd_impl = GSI_NONE;
 
 		cmn_err_once(CE_WARN,
 		    "ICP: Can't use the aes generic or cycle implementations "
 		    "in combination with the gcm SIMD implementations!");
->>>>>>> 6b7e2bbd23 (ICP: AES_GCM: Add sse4 asm routines, first stab)
 		cmn_err_once(CE_WARN,
 		    "ICP: Falling back to a compatible implementation, "
 		    "aes-gcm performance will likely be degraded.");
@@ -970,21 +915,6 @@ gcm_init_ctx(gcm_ctx_t *gcm_ctx, char *param,
 	}
 
 	/*
-<<<<<<< HEAD
-	 * AVX implementations use Htable with sizes depending on
-	 * implementation.
-	 */
-	if (gcm_ctx->impl != GCM_IMPL_GENERIC) {
-		rv = gcm_init_avx(gcm_ctx, iv, iv_len, aad, aad_len,
-		    block_size);
-	}
-	else
-#endif /* ifdef CAN_USE_GCM_ASM */
-	if (gcm_init(gcm_ctx, iv, iv_len, aad, aad_len, block_size,
-	    encrypt_block, copy_block, xor_block) != CRYPTO_SUCCESS) {
-		rv = CRYPTO_MECHANISM_PARAM_INVALID;
-	}
-=======
 	 * Only use isalc if the given IV and tag lengths match what we support.
 	 * This will almost always be the case.
 	 */
@@ -1034,7 +964,6 @@ gcm_init_ctx(gcm_ctx_t *gcm_ctx, char *param,
 	}
 #endif /* ifdef CAN_USE_GCM_ASM_AVX */
 #endif /* ifdef CAN_USE_GCM_ASM */
->>>>>>> 6b7e2bbd23 (ICP: AES_GCM: Add sse4 asm routines, first stab)
 
 	return (rv);
 }
@@ -1186,14 +1115,7 @@ gcm_impl_init(void)
 		if (zfs_movbe_available() == B_TRUE) {
 			atomic_swap_32(&gcm_avx_can_use_movbe, B_TRUE);
 		}
-<<<<<<< HEAD
-#endif
-		if (GCM_IMPL_READ(user_sel_impl) == IMPL_FASTEST) {
-			gcm_use_impl(GCM_IMPL_AVX);
-		}
-=======
 #endif /* ifdef HAVE_MOVBE */
->>>>>>> 6b7e2bbd23 (ICP: AES_GCM: Add sse4 asm routines, first stab)
 	}
 #endif /* ifdef CAN_USE_GCM_ASM_AVX */
 
@@ -1253,16 +1175,12 @@ gcm_impl_set(const char *val)
 	/* Check mandatory options */
 	for (i = 0; i < ARRAY_SIZE(gcm_impl_opts); i++) {
 #ifdef CAN_USE_GCM_ASM
-<<<<<<< HEAD
-#if CAN_USE_GCM_ASM >= 2
-=======
 		/* Ignore sse implementation if it won't work. */
 		if (gcm_impl_opts[i].sel == IMPL_SSE4_1 &&
 			!gcm_sse_will_work()) {
 			continue;
 			}
 #ifdef CAN_USE_GCM_ASM_AVX
->>>>>>> 6b7e2bbd23 (ICP: AES_GCM: Add sse4 asm routines, first stab)
 		/* Ignore avx implementation if it won't work. */
 		if (gcm_impl_opts[i].sel == IMPL_AVX2 &&
 		    !gcm_avx2_will_work()) {
@@ -1297,19 +1215,6 @@ gcm_impl_set(const char *val)
 	* Use the requested SIMD implementation if available.
 	 * If the requested one is fastest, use the fastest SIMD impl.
 	 */
-<<<<<<< HEAD
-#if CAN_USE_GCM_ASM >= 2
-	if (gcm_avx2_will_work() == B_TRUE &&
-	    (impl == IMPL_AVX2 || impl == IMPL_FASTEST)) {
-		gcm_use_impl(GCM_IMPL_AVX2);
-	} else
-#endif
-	if (gcm_avx_will_work() == B_TRUE &&
-	    (impl == IMPL_AVX || impl == IMPL_FASTEST)) {
-		gcm_use_impl(GCM_IMPL_AVX);
-	} else {
-		gcm_use_impl(GCM_IMPL_GENERIC);
-=======
 	gcm_simd_impl_t simd_impl = GSI_NONE;
 
 	if (gcm_sse_will_work() == B_TRUE &&
@@ -1320,7 +1225,6 @@ gcm_impl_set(const char *val)
 	if (gcm_avx_will_work() == B_TRUE &&
 	    (impl == IMPL_AVX || impl == IMPL_FASTEST)) {
 		simd_impl = GSI_OSSL_AVX;
->>>>>>> 6b7e2bbd23 (ICP: AES_GCM: Add sse4 asm routines, first stab)
 	}
 #endif /* ifdef CAN_USE_GCM_ASM_AVX */
 	gcm_set_simd_impl(simd_impl);
@@ -1613,74 +1517,6 @@ gcm_avx_will_work(void)
 	    zfs_pclmulqdq_available());
 }
 
-<<<<<<< HEAD
-static inline void
-gcm_use_impl(gcm_impl impl)
-{
-	switch (impl) {
-#if CAN_USE_GCM_ASM >= 2
-		case GCM_IMPL_AVX2:
-			if (gcm_avx2_will_work() == B_TRUE) {
-				atomic_swap_32(&gcm_impl_used, impl);
-				return;
-			}
-
-			zfs_fallthrough;
-#endif
-
-		case GCM_IMPL_AVX:
-			if (gcm_avx_will_work() == B_TRUE) {
-				atomic_swap_32(&gcm_impl_used, impl);
-				return;
-			}
-
-			zfs_fallthrough;
-
-		default:
-			atomic_swap_32(&gcm_impl_used, GCM_IMPL_GENERIC);
-	}
-}
-
-static inline boolean_t
-gcm_impl_will_work(gcm_impl impl)
-{
-	switch (impl) {
-#if CAN_USE_GCM_ASM >= 2
-		case GCM_IMPL_AVX2:
-			return (gcm_avx2_will_work());
-#endif
-
-		case GCM_IMPL_AVX:
-			return (gcm_avx_will_work());
-
-		default:
-			return (B_TRUE);
-	}
-}
-
-static inline gcm_impl
-gcm_toggle_impl(void)
-{
-	gcm_impl current_impl, new_impl;
-	do { /* handle races */
-		current_impl = atomic_load_32(&gcm_impl_used);
-		new_impl = current_impl;
-		while (B_TRUE) { /* handle incompatble implementations */
-			new_impl = (new_impl + 1) % GCM_IMPL_MAX;
-			if (gcm_impl_will_work(new_impl)) {
-				break;
-			}
-		}
-
-	} while (atomic_cas_32(&gcm_impl_used, current_impl, new_impl) !=
-	    current_impl);
-
-	return (new_impl);
-}
-
-
-=======
->>>>>>> 6b7e2bbd23 (ICP: AES_GCM: Add sse4 asm routines, first stab)
 /* Increment the GCM counter block by n. */
 static inline void
 gcm_incr_counter_block_by(gcm_ctx_t *ctx, int n)
@@ -1750,17 +1586,7 @@ gcm_mode_encrypt_contiguous_blocks_avx(gcm_ctx_t *ctx, const uint8_t *data,
 	size_t need = 0;
 	size_t done = 0;
 	uint8_t *datap = (uint8_t *)data;
-<<<<<<< HEAD
-	size_t chunk_size = (size_t)GCM_CHUNK_SIZE_READ;
-	aesni_gcm_encrypt_impl *encrypt_blocks =
-#if CAN_USE_GCM_ASM >= 2
-	    ctx->impl == GCM_IMPL_AVX2 ?
-	    aesni_gcm_encrypt_avx2 :
-#endif
-	    aesni_gcm_encrypt_avx;
-=======
 	size_t chunk_size = (size_t)GCM_AVX_CHUNK_SIZE_READ;
->>>>>>> 6b7e2bbd23 (ICP: AES_GCM: Add sse4 asm routines, first stab)
 	const aes_key_t *key = ((aes_key_t *)ctx->gcm_keysched);
 	uint64_t *ghash = ctx->gcm_ghash;
 	uint64_t *htable = ctx->gcm_Htable;
@@ -2000,17 +1826,7 @@ gcm_decrypt_final_avx(gcm_ctx_t *ctx, crypto_data_t *out, size_t block_size)
 	ASSERT3S(((aes_key_t *)ctx->gcm_keysched)->ops->needs_byteswap, ==,
 	    B_FALSE);
 
-<<<<<<< HEAD
-	size_t chunk_size = (size_t)GCM_CHUNK_SIZE_READ;
-	aesni_gcm_decrypt_impl *decrypt_blocks =
-#if CAN_USE_GCM_ASM >= 2
-	    ctx->impl == GCM_IMPL_AVX2 ?
-	    aesni_gcm_decrypt_avx2 :
-#endif
-	    aesni_gcm_decrypt_avx;
-=======
 	size_t chunk_size = (size_t)GCM_AVX_CHUNK_SIZE_READ;
->>>>>>> 6b7e2bbd23 (ICP: AES_GCM: Add sse4 asm routines, first stab)
 	size_t pt_len = ctx->gcm_processed_data_len - ctx->gcm_tag_len;
 	uint8_t *datap = ctx->gcm_pt_buf;
 	const aes_key_t *key = ((aes_key_t *)ctx->gcm_keysched);
