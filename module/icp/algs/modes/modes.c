@@ -184,20 +184,4 @@ gcm_clear_ctx(gcm_ctx_t *ctx)
 	/* Optional */
 	explicit_memset(ctx->gcm_J0, 0, sizeof (ctx->gcm_J0));
 	explicit_memset(ctx->gcm_tmp, 0, sizeof (ctx->gcm_tmp));
-
-#ifdef DEBUG_GCM_ASM
-	if (ctx->gcm_shadow_ctx != NULL) {
-		/* No need to clear data while debugging, just free memory. */
-		gcm_ctx_t *sc = ctx->gcm_shadow_ctx;
-
-		if (sc->gcm_Htable != NULL) {
-			kmem_free(sc->gcm_Htable, sc->gcm_htab_len);
-		}
-		if (sc->gcm_pt_buf != NULL) {
-			vmem_free(sc->gcm_pt_buf, sc->gcm_pt_buf_len);
-		}
-		kmem_free(sc, sizeof (gcm_ctx_t));
-		ctx->gcm_shadow_ctx = NULL;
-	}
-#endif
 }

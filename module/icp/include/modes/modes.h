@@ -153,8 +153,8 @@ typedef struct ccm_ctx {
 typedef enum gcm_simd_impl {
 	GSI_NONE,
 	GSI_OSSL_AVX,
-	GSI_ISALC_SSE,
 	GSI_AVX2,
+	GSI_ISALC_SSE,
 	GSI_NUM_IMPL
 } gcm_simd_impl_t;
 
@@ -206,10 +206,6 @@ typedef struct gcm_ctx {
 	uint8_t *gcm_pt_buf;
 #ifdef CAN_USE_GCM_ASM
 	gcm_simd_impl_t gcm_simd_impl;
-#ifdef DEBUG_GCM_ASM
-	struct gcm_ctx *gcm_shadow_ctx;
-	boolean_t gcm_is_shadow;
-#endif
 #endif
 } gcm_ctx_t;
 
