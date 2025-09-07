@@ -2210,14 +2210,32 @@ zfs_dedupe_range(znode_t *inzp, uint64_t *inoffp, znode_t *outzp,
 		if (error != 0)
 			break;
 
+		/* Check if we read the expected amount */
+		if (zfs_uio_resid(&inuio) != 0) {
+			/* Partial read - ranges might not be comparable */
+			error = SET_ERROR(EIO);
+			break;
+		}
+
 		error = zfs_read(outzp, &outuio, 0, cr);
 		if (error != 0)
 			break;
 
+		/* Check if we read the expected amount */
+		if (zfs_uio_resid(&outuio) != 0) {
+			/* Partial read - ranges might not be comparable */
+			error = SET_ERROR(EIO);
+			break;
+		}
+
 		/* Compare the data */
 		if (memcmp(inbuf, outbuf, cmplen) != 0) {
-			/* Data doesn't match - not eligible for dedup */
-			error = SET_ERROR(EINVAL);
+			/* 
+			 * Data doesn't match - return success but indicate
+			 * that no bytes were deduplicated by setting length to 0
+			 */
+			*lenp = 0;
+			error = 0; /* This is not an error condition */
 			break;
 		}
 	}
@@ -2225,10 +2243,27 @@ zfs_dedupe_range(znode_t *inzp, uint64_t *inoffp, znode_t *outzp,
 	vmem_free(inbuf, blksz);
 	vmem_free(outbuf, blksz);
 
-	zfs_rangelock_exit(outlr);
-	zfs_rangelock_exit(inlr);
+	if (error == 0 && *lenp > 0) {
+		/* 
+		 * Data matches! Now we need to get write locks and deduplicate.
+		 * We need to re-lock with write access for the destination.
+		 */
+		zfs_rangelock_exit(outlr);
+		zfs_rangelock_exit(inlr);
 
-	if (error == 0) {
+		/* Re-lock with write access for destination */
+		if (inzp < outzp || (inzp == outzp && inoff < outoff)) {
+			inlr = zfs_rangelock_enter(&inzp->z_rangelock, inoff, len,
+			    RL_READER);
+			outlr = zfs_rangelock_enter(&outzp->z_rangelock, outoff, len,
+			    RL_WRITER);
+		} else {
+			outlr = zfs_rangelock_enter(&outzp->z_rangelock, outoff, len,
+			    RL_WRITER);
+			inlr = zfs_rangelock_enter(&inzp->z_rangelock, inoff, len,
+			    RL_READER);
+		}
+
 		/* 
 		 * Data matches! Now we can deduplicate by cloning.
 		 * Since the data is identical, we can safely use clone_range
@@ -2246,6 +2281,12 @@ zfs_dedupe_range(znode_t *inzp, uint64_t *inoffp, znode_t *outzp,
 			*outoffp = clone_outoff;
 			*lenp = clone_len;
 		}
+
+		zfs_rangelock_exit(outlr);
+		zfs_rangelock_exit(inlr);
+	} else {
+		zfs_rangelock_exit(outlr);
+		zfs_rangelock_exit(inlr);
 	}
 
 	zfs_exit_two(inzfsvfs, outzfsvfs, FTAG);
