@@ -129,9 +129,9 @@ typedef struct cpuid_feature_desc {
 #define	_AES_BIT		(1U << 25)
 #define	_PCLMULQDQ_BIT		(1U << 1)
 #define	_MOVBE_BIT		(1U << 22)
-#define	_SHA_NI_BIT		(1U << 29)
 #define	_VAES_BIT		(1U << 9)
 #define	_VPCLMULQDQ_BIT		(1U << 10)
+#define	_SHA_NI_BIT		(1U << 29)
 
 /*
  * Descriptions of supported instruction sets

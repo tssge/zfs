@@ -855,6 +855,7 @@ static const struct {
 		{ "fastest",	IMPL_FASTEST },
 #ifdef CAN_USE_GCM_ASM
 		{ "avx",	IMPL_AVX },
+		{ "avx2",	IMPL_AVX2 },
 		{ "avx2-vaes",	IMPL_AVX2 },
 		{ "isalc-sse",	IMPL_ISALC_SSE },
 #endif
