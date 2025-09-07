@@ -50,8 +50,11 @@
 /* Select GCM implementation */
 #define	IMPL_FASTEST	(UINT32_MAX)
 #define	IMPL_CYCLE	(UINT32_MAX-1)
-#ifdef CAN_USE_GCM_ASM_AVX
+#ifdef CAN_USE_GCM_ASM
 #define	IMPL_AVX	(UINT32_MAX-2)
+#if CAN_USE_GCM_ASM >= 2
+#define	IMPL_AVX2	(UINT32_MAX-3)
+#endif
 #endif
 #ifdef CAN_USE_GCM_ASM_SSE
 #define	IMPL_SSE4_1	(UINT32_MAX-3)
@@ -316,6 +319,7 @@ static inline int gcm_decrypt_final_isalc(gcm_ctx_t *, crypto_data_t *);
 
 #ifdef CAN_USE_GCM_ASM_AVX
 static inline boolean_t gcm_avx_will_work(void);
+static inline boolean_t gcm_avx2_will_work(void);
 static int gcm_mode_encrypt_contiguous_blocks_avx(gcm_ctx_t *, const uint8_t *,
     size_t, crypto_data_t *, size_t);
 
@@ -325,6 +329,19 @@ static void gcm_init_avx(gcm_ctx_t *, const uint8_t *, size_t, const uint8_t *,
     size_t, size_t);
 
 #endif /* ifdef CAN_USE_GCM_ASM_AVX */
+
+#ifdef CAN_USE_GCM_ASM
+extern void ASMABI gcm_init_vpclmulqdq_avx2(uint128_t Htable[16],
+    const uint8_t H[16]);
+extern void ASMABI gcm_ghash_vpclmulqdq_avx2(uint64_t ghash[2],
+    const uint8_t Htable[16*16], const uint8_t *in, size_t len);
+extern void ASMABI aes_gcm_enc_update_vaes_avx2(const uint8_t *in,
+    uint8_t *out, size_t len, const uint8_t *key, uint8_t ivec[16],
+    uint64_t *Xi);
+extern void ASMABI aes_gcm_dec_update_vaes_avx2(const uint8_t *in,
+    uint8_t *out, size_t len, const uint8_t *key, uint8_t ivec[16],
+    uint64_t *Xi);
+#endif
 #endif /* ifdef CAN_USE_GCM_ASM */
 
 /*
@@ -1145,6 +1162,11 @@ gcm_impl_init(void)
 #endif /* ifdef HAVE_MOVBE */
 	}
 #endif /* CAN_USE_GCM_ASM_AVX */
+#if CAN_USE_GCM_ASM >= 2
+	if (gcm_avx2_will_work()) {
+		fastest_simd = GSI_AVX2;
+	}
+#endif
 
 	if (GCM_IMPL_READ(user_sel_impl) == IMPL_FASTEST) {
 		gcm_set_simd_impl(fastest_simd);
@@ -1164,6 +1186,9 @@ static const struct {
 		{ "fastest",	IMPL_FASTEST },
 #ifdef CAN_USE_GCM_ASM_AVX
 		{ "avx",	IMPL_AVX },
+#endif
+#if CAN_USE_GCM_ASM >= 2
+		{ "avx2-vaes",	IMPL_AVX2 },
 #endif
 #ifdef CAN_USE_GCM_ASM
 		{ "sse4_1",	IMPL_SSE4_1 },
@@ -1214,6 +1239,13 @@ gcm_impl_set(const char *val)
 			continue;
 		}
 #endif /* ifdef CAN_USE_GCM_ASM_AVX */
+#if CAN_USE_GCM_ASM >= 2
+		/* Ignore avx2 implementation if it won't work. */
+		if (gcm_impl_opts[i].sel == IMPL_AVX2 &&
+		    !gcm_avx2_will_work()) {
+			continue;
+		}
+#endif
 #endif /* ifdef CAN_USE_GCM_ASM */
 		if (strcmp(req_name, gcm_impl_opts[i].name) == 0) {
 			impl = gcm_impl_opts[i].sel;
@@ -1250,6 +1282,12 @@ gcm_impl_set(const char *val)
 		simd_impl = GSI_OSSL_AVX;
 	}
 #endif /* ifdef CAN_USE_GCM_ASM_AVX */
+#if CAN_USE_GCM_ASM >= 2
+	if (gcm_avx2_will_work() == B_TRUE &&
+	    (impl == IMPL_AVX2 || impl == IMPL_FASTEST)) {
+		simd_impl = GSI_AVX2;
+	}
+#endif
 	gcm_set_simd_impl(simd_impl);
 #endif /* ifdef CAN_USE_GCM_ASM */
 
@@ -1293,6 +1331,13 @@ icp_gcm_impl_get(char *buffer, zfs_kernel_param_t *kp)
 			continue;
 		}
 #endif /* ifdef CAN_USE_GCM_ASM_AVX */
+#if CAN_USE_GCM_ASM >= 2
+		/* Ignore avx2 implementation if it won't work. */
+		if (gcm_impl_opts[i].sel == IMPL_AVX2 &&
+		    !gcm_avx2_will_work()) {
+			continue;
+		}
+#endif
 #endif /* ifdef CAN_USE_GCM_ASM */
 		fmt = (impl == gcm_impl_opts[i].sel) ? "[%s] " : "%s ";
 		cnt += kmem_scnprintf(buffer + cnt, PAGE_SIZE - cnt, fmt,
@@ -1490,6 +1535,16 @@ gcm_avx_will_work(void)
 	/* Avx should imply aes-ni and pclmulqdq, but make sure anyhow. */
 	return (kfpu_allowed() &&
 	    zfs_avx_available() && zfs_aes_available() &&
+	    zfs_pclmulqdq_available());
+}
+
+static inline boolean_t
+gcm_avx2_will_work(void)
+{
+	/* AVX2 VAES should imply AVX2, AES-NI, PCLMULQDQ, but check anyway. */
+	return (kfpu_allowed() &&
+	    zfs_avx2_available() && zfs_vaes_available() &&
+	    zfs_vpclmulqdq_available() && zfs_aes_available() &&
 	    zfs_pclmulqdq_available());
 }
 

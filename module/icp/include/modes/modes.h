@@ -154,6 +154,7 @@ typedef enum gcm_simd_impl {
 	GSI_NONE,
 	GSI_OSSL_AVX,
 	GSI_ISALC_SSE,
+	GSI_AVX2,
 	GSI_NUM_IMPL
 } gcm_simd_impl_t;
 
