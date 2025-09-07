@@ -26,6 +26,7 @@
 
 #include <sys/zfs_context.h>
 #include <modes/modes.h>
+#include <modes/gcm_impl.h>
 #include <sys/crypto/common.h>
 #include <sys/crypto/impl.h>
 
@@ -171,10 +172,16 @@ gcm_clear_ctx(gcm_ctx_t *ctx)
 	explicit_memset(ctx->gcm_remainder, 0, sizeof (ctx->gcm_remainder));
 	explicit_memset(ctx->gcm_H, 0, sizeof (ctx->gcm_H));
 #if defined(CAN_USE_GCM_ASM)
-	if (ctx->impl != GCM_IMPL_GENERIC) {
+	if (ctx->gcm_simd_impl != GSI_NONE) {
 		ASSERT3P(ctx->gcm_Htable, !=, NULL);
 		explicit_memset(ctx->gcm_Htable, 0, ctx->gcm_htab_len);
 		kmem_free(ctx->gcm_Htable, ctx->gcm_htab_len);
+	}
+	/* Clean up shadow context if it exists */
+	if (ctx->gcm_shadow_ctx != NULL) {
+		gcm_clear_ctx(ctx->gcm_shadow_ctx);
+		kmem_free(ctx->gcm_shadow_ctx, sizeof (gcm_ctx_t));
+		ctx->gcm_shadow_ctx = NULL;
 	}
 #endif
 	if (ctx->gcm_pt_buf != NULL) {

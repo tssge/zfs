@@ -183,7 +183,9 @@ typedef struct gcm_ctx {
 	uint64_t gcm_len_a_len_c[2];
 	uint8_t *gcm_pt_buf;
 #ifdef CAN_USE_GCM_ASM
-	enum gcm_impl impl;
+	gcm_simd_impl_t gcm_simd_impl;
+	struct gcm_ctx *gcm_shadow_ctx;
+	boolean_t gcm_is_shadow;
 #endif
 } gcm_ctx_t;
 

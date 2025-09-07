@@ -38,6 +38,18 @@ extern "C" {
 #include <sys/crypto/common.h>
 
 /*
+ * Conditional assembly support for GCM implementations
+ */
+#if defined(__x86_64) && defined(HAVE_SSE4_1) && defined(HAVE_AES) && defined(HAVE_PCLMULQDQ)
+#define	CAN_USE_GCM_ASM
+#define	CAN_USE_GCM_ASM_SSE
+#endif
+
+#if defined(__x86_64) && defined(HAVE_AVX) && defined(HAVE_AES) && defined(HAVE_PCLMULQDQ)
+#define	CAN_USE_GCM_ASM_AVX
+#endif
+
+/*
  * Methods used to define GCM implementation
  *
  * @gcm_mul_f Perform carry-less multiplication
@@ -48,6 +60,18 @@ typedef boolean_t	(*gcm_will_work_f)(void);
 
 #define	GCM_IMPL_NAME_MAX (16)
 
+/*
+ * SIMD implementation types for GCM
+ */
+typedef enum gcm_simd_impl {
+	GSI_NONE = 0,		/* No SIMD implementation */
+	GSI_OSSL_AVX,		/* OpenSSL AVX implementation */
+	GSI_ISALC_SSE,		/* Intel ISAL SSE implementation */
+	GSI_ISALC_FIRST_IMPL = GSI_ISALC_SSE,
+	GSI_ISALC_LAST_IMPL = GSI_ISALC_SSE,
+	GSI_ISALC_NUM_IMPL = 1
+} gcm_simd_impl_t;
+
 typedef struct gcm_impl_ops {
 	gcm_mul_f mul;
 	gcm_will_work_f is_supported;
@@ -57,10 +81,6 @@ typedef struct gcm_impl_ops {
 extern const gcm_impl_ops_t gcm_generic_impl;
 #if defined(__x86_64) && defined(HAVE_PCLMULQDQ)
 extern const gcm_impl_ops_t gcm_pclmulqdq_impl;
-#endif
-#if defined(__x86_64) && defined(HAVE_SSE4_1) && defined(HAVE_AES) && \
-    defined(HAVE_PCLMULQDQ)
-extern const gcm_impl_ops_t gcm_sse41_impl;
 #endif
 
 /*

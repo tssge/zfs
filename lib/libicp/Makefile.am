@@ -20,7 +20,6 @@ nodist_libicp_la_SOURCES = \
 	module/icp/algs/modes/modes.c \
 	module/icp/algs/modes/gcm_generic.c \
 	module/icp/algs/modes/gcm_pclmulqdq.c \
-	module/icp/algs/modes/gcm_sse41.c \
 	module/icp/algs/modes/gcm.c \
 	module/icp/algs/modes/ccm.c \
 	module/icp/algs/sha2/sha2_generic.c \
@@ -76,8 +75,6 @@ nodist_libicp_la_SOURCES += \
 	module/icp/asm-x86_64/modes/isalc_gcm128_sse.S \
 	module/icp/asm-x86_64/modes/isalc_gcm192_sse.S \
 	module/icp/asm-x86_64/modes/isalc_gcm256_sse.S \
-	module/icp/asm-x86_64/modes/isalc_gcm_defines.S \
-	module/icp/asm-x86_64/modes/isalc_reg_sizes.S \
 	module/icp/asm-x86_64/sha2/sha256-x86_64.S \
 	module/icp/asm-x86_64/sha2/sha512-x86_64.S \
 	module/icp/asm-x86_64/blake3/blake3_avx2.S \
