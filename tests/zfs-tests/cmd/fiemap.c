@@ -225,6 +225,8 @@ fiemap_print(fiemap_args_t *fa)
 static void
 fiemap_verify_count_cb(void *arg, uint64_t offset, uint64_t size)
 {
+	(void) offset;
+	(void) size;
 	fiemap_args_t *fa = (fiemap_args_t *)arg;
 	fa->fa_verify_sizes[fa->fa_verify_index]++;
 }

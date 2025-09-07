@@ -5496,7 +5496,7 @@ dbuf_generate_dirty_maps(dnode_t *dn, zfs_range_tree_t *dirty_tree,
 	 * Fast path.  The dnode has not been dirtied since it was last synced
 	 * and therefore cannot contain pending frees or dirty records.
 	 */
-	if (dn->dn_dirty_txg < txg) {
+	if (dn->dn_dirtycnt == 0) {
 		for (uint64_t i = txg; i <= open_txg; i++) {
 			uint64_t txgoff __maybe_unused = i & TXG_MASK;
 			ASSERT3P(dn->dn_free_ranges[txgoff], ==, NULL);
