@@ -716,6 +716,10 @@ static const gcm_impl_ops_t *gcm_all_impl[] = {
 #if defined(__x86_64) && defined(HAVE_PCLMULQDQ)
 	&gcm_pclmulqdq_impl,
 #endif
+#if defined(__x86_64) && defined(HAVE_SSE4_1) && defined(HAVE_AES) && \
+    defined(HAVE_PCLMULQDQ)
+	&gcm_sse41_impl,
+#endif
 };
 
 /* Indicate that benchmark has been completed */
@@ -803,6 +807,13 @@ gcm_impl_init(void)
 #if defined(__x86_64) && defined(HAVE_PCLMULQDQ)
 	if (gcm_pclmulqdq_impl.is_supported()) {
 		memcpy(&gcm_fastest_impl, &gcm_pclmulqdq_impl,
+		    sizeof (gcm_fastest_impl));
+	} else
+#endif
+#if defined(__x86_64) && defined(HAVE_SSE4_1) && defined(HAVE_AES) && \
+    defined(HAVE_PCLMULQDQ)
+	if (gcm_sse41_impl.is_supported()) {
+		memcpy(&gcm_fastest_impl, &gcm_sse41_impl,
 		    sizeof (gcm_fastest_impl));
 	} else
 #endif

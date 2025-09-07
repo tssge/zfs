@@ -104,6 +104,7 @@ ICP_OBJS := \
 	algs/modes/ccm.o \
 	algs/modes/gcm.o \
 	algs/modes/gcm_generic.o \
+	algs/modes/gcm_sse41.o \
 	algs/modes/modes.o \
 	algs/sha2/sha2_generic.o \
 	algs/sha2/sha256_impl.o \
@@ -137,12 +138,19 @@ ICP_OBJS_X86_64 := \
 	asm-x86_64/modes/aesni-gcm-x86_64.o \
 	asm-x86_64/modes/aesni-gcm-avx2-vaes.o \
 	asm-x86_64/modes/gcm_pclmulqdq.o \
-	asm-x86_64/modes/ghash-x86_64.o
+	asm-x86_64/modes/ghash-x86_64.o \
+	asm-x86_64/modes/isalc_gcm_sse.o \
+	asm-x86_64/modes/isalc_gcm128_sse.o \
+	asm-x86_64/modes/isalc_gcm192_sse.o \
+	asm-x86_64/modes/isalc_gcm256_sse.o \
+	asm-x86_64/modes/isalc_gcm_defines.o \
+	asm-x86_64/modes/isalc_reg_sizes.o
 
 ICP_OBJS_X86 := \
 	algs/aes/aes_impl_aesni.o \
 	algs/aes/aes_impl_x86-64.o \
-	algs/modes/gcm_pclmulqdq.o
+	algs/modes/gcm_pclmulqdq.o \
+	algs/modes/gcm_sse41.o
 
 ICP_OBJS_ARM := \
 	asm-arm/sha2/sha256-armv7.o \

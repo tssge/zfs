@@ -58,6 +58,10 @@ extern const gcm_impl_ops_t gcm_generic_impl;
 #if defined(__x86_64) && defined(HAVE_PCLMULQDQ)
 extern const gcm_impl_ops_t gcm_pclmulqdq_impl;
 #endif
+#if defined(__x86_64) && defined(HAVE_SSE4_1) && defined(HAVE_AES) && \
+    defined(HAVE_PCLMULQDQ)
+extern const gcm_impl_ops_t gcm_sse41_impl;
+#endif
 
 /*
  * Initializes fastest implementation
