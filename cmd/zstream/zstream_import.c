@@ -39,12 +39,28 @@
 #include <sys/zio_checksum.h>
 #include <sys/zio_compress.h>
 #include <sys/fs/zfs.h>
+#include <sys/dmu.h>
 #include "zfs_fletcher.h"
 #include "zstream.h"
 
 #define	GZIP_MAGIC1	0x1f
 #define	GZIP_MAGIC2	0x8b
 #define	GZIP_METHOD_DEFLATE	0x08
+
+/*
+ * Safe version of fread(), exits on error.
+ */
+static int
+sfread(void *buf, size_t size, FILE *fp)
+{
+	int rv = fread(buf, size, 1, fp);
+	if (rv == 0 && ferror(fp)) {
+		(void) fprintf(stderr, "Error while reading file: %s\n",
+		    strerror(errno));
+		exit(1);
+	}
+	return (rv);
+}
 
 /*
  * Simple gzip header structure
@@ -63,27 +79,24 @@ static int
 write_record(dmu_replay_record_t *drr, void *payload, int payload_len,
     zio_cksum_t *zc, int outfd)
 {
-	/*
-	 * Calculate checksum for the record header up to the checksum field
-	 */
+	assert(offsetof(dmu_replay_record_t, drr_u.drr_checksum.drr_checksum)
+	    == sizeof (dmu_replay_record_t) - sizeof (zio_cksum_t));
 	fletcher_4_incremental_native(drr,
 	    offsetof(dmu_replay_record_t, drr_u.drr_checksum.drr_checksum), zc);
-	
 	if (drr->drr_type != DRR_BEGIN) {
+		assert(ZIO_CHECKSUM_IS_ZERO(&drr->drr_u.
+		    drr_checksum.drr_checksum));
 		drr->drr_u.drr_checksum.drr_checksum = *zc;
 	}
-
-	/* Write the record header */
-	if (write(outfd, drr, sizeof (*drr)) != sizeof (*drr))
+	fletcher_4_incremental_native(&drr->drr_u.drr_checksum.drr_checksum,
+	    sizeof (zio_cksum_t), zc);
+	if (write(outfd, drr, sizeof (*drr)) == -1)
 		return (errno);
-
-	/* Write the payload if present */
-	if (payload != NULL && payload_len > 0) {
+	if (payload_len != 0) {
 		fletcher_4_incremental_native(payload, payload_len, zc);
-		if (write(outfd, payload, payload_len) != payload_len)
+		if (write(outfd, payload, payload_len) == -1)
 			return (errno);
 	}
-
 	return (0);
 }
 
@@ -168,8 +181,11 @@ create_end_record(int outfd, zio_cksum_t *zc)
 	drr.drr_u.drr_end.drr_checksum = *zc;
 	drr.drr_u.drr_end.drr_toguid = 0x1;
 
-	/* Final record doesn't update checksum */
-	return (write_record(&drr, NULL, 0, zc, outfd));
+	/* For END records, we don't update the checksum */
+	if (write(outfd, &drr, sizeof (drr)) == -1)
+		return (errno);
+	
+	return (0);
 }
 
 static int
