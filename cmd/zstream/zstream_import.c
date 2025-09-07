@@ -47,20 +47,7 @@
 #define	GZIP_MAGIC2	0x8b
 #define	GZIP_METHOD_DEFLATE	0x08
 
-/*
- * Safe version of fread(), exits on error.
- */
-static int
-sfread(void *buf, size_t size, FILE *fp)
-{
-	int rv = fread(buf, size, 1, fp);
-	if (rv == 0 && ferror(fp)) {
-		(void) fprintf(stderr, "Error while reading file: %s\n",
-		    strerror(errno));
-		exit(1);
-	}
-	return (rv);
-}
+
 
 /*
  * Simple gzip header structure
@@ -104,19 +91,20 @@ static int
 create_begin_record(const char *dataset_name, int outfd, zio_cksum_t *zc)
 {
 	dmu_replay_record_t drr = {0};
-	
+
 	drr.drr_type = DRR_BEGIN;
 	drr.drr_payloadlen = 0;
-	
+
 	/* Initialize begin record */
 	drr.drr_u.drr_begin.drr_magic = DMU_BACKUP_MAGIC;
-	DMU_SET_STREAM_HDRTYPE(drr.drr_u.drr_begin.drr_versioninfo, DMU_SUBSTREAM);
+	DMU_SET_STREAM_HDRTYPE(drr.drr_u.drr_begin.drr_versioninfo,
+	    DMU_SUBSTREAM);
 	drr.drr_u.drr_begin.drr_creation_time = time(NULL);
 	drr.drr_u.drr_begin.drr_type = DMU_OST_ZFS;
 	drr.drr_u.drr_begin.drr_flags = 0;
 	drr.drr_u.drr_begin.drr_toguid = 0x1; /* Simple non-zero GUID */
 	drr.drr_u.drr_begin.drr_fromguid = 0;
-	
+
 	/* Set the dataset name */
 	strlcpy(drr.drr_u.drr_begin.drr_toname, dataset_name,
 	    sizeof (drr.drr_u.drr_begin.drr_toname));
@@ -125,14 +113,13 @@ create_begin_record(const char *dataset_name, int outfd, zio_cksum_t *zc)
 }
 
 static int
-create_object_record(uint64_t object_id, const char *filename, 
-    size_t file_size, int outfd, zio_cksum_t *zc)
+create_object_record(uint64_t object_id, int outfd, zio_cksum_t *zc)
 {
 	dmu_replay_record_t drr = {0};
-	
+
 	drr.drr_type = DRR_OBJECT;
 	drr.drr_payloadlen = 0;
-	
+
 	/* Initialize object record for a regular file */
 	drr.drr_u.drr_object.drr_object = object_id;
 	drr.drr_u.drr_object.drr_type = DMU_OT_PLAIN_FILE_CONTENTS;
@@ -140,7 +127,7 @@ create_object_record(uint64_t object_id, const char *filename,
 	drr.drr_u.drr_object.drr_blksz = 131072; /* 128KB blocks */
 	drr.drr_u.drr_object.drr_bonuslen = 0;
 	drr.drr_u.drr_object.drr_checksumtype = ZIO_CHECKSUM_FLETCHER_4;
-	drr.drr_u.drr_object.drr_compress = ZIO_COMPRESS_GZIP_6; /* Default gzip level */
+	drr.drr_u.drr_object.drr_compress = ZIO_COMPRESS_GZIP_6;
 	drr.drr_u.drr_object.drr_dn_slots = 1;
 	drr.drr_u.drr_object.drr_flags = 0;
 
@@ -152,10 +139,10 @@ create_write_record(uint64_t object_id, uint64_t offset, void *data,
     size_t compressed_size, size_t logical_size, int outfd, zio_cksum_t *zc)
 {
 	dmu_replay_record_t drr = {0};
-	
+
 	drr.drr_type = DRR_WRITE;
 	drr.drr_payloadlen = compressed_size;
-	
+
 	/* Initialize write record */
 	drr.drr_u.drr_write.drr_object = object_id;
 	drr.drr_u.drr_write.drr_type = DMU_OT_PLAIN_FILE_CONTENTS;
@@ -174,17 +161,17 @@ static int
 create_end_record(int outfd, zio_cksum_t *zc)
 {
 	dmu_replay_record_t drr = {0};
-	
+
 	drr.drr_type = DRR_END;
 	drr.drr_payloadlen = 0;
-	
+
 	drr.drr_u.drr_end.drr_checksum = *zc;
 	drr.drr_u.drr_end.drr_toguid = 0x1;
 
 	/* For END records, we don't update the checksum */
 	if (write(outfd, &drr, sizeof (drr)) == -1)
 		return (errno);
-	
+
 	return (0);
 }
 
@@ -228,7 +215,7 @@ process_gzip_file(const char *filename, const char *dataset_name, int outfd)
 
 	/* Reset file position and read entire file */
 	fseek(infile, 0, SEEK_SET);
-	
+
 	gzip_data = malloc(file_size);
 	if (gzip_data == NULL) {
 		fclose(infile);
@@ -250,14 +237,14 @@ process_gzip_file(const char *filename, const char *dataset_name, int outfd)
 		err(1, "failed to write begin record");
 	}
 
-	if ((ret = create_object_record(1, filename, file_size, outfd, &zc)) != 0) {
+	if ((ret = create_object_record(1, outfd, &zc)) != 0) {
 		err(1, "failed to write object record");
 	}
 
 	/*
-	 * For simplicity, write the entire gzip file as a single compressed block.
-	 * In a more sophisticated implementation, we could parse the gzip stream
-	 * and extract individual deflate blocks.
+	 * For simplicity, write the entire gzip file as a single compressed
+	 * block. In a more sophisticated implementation, we could parse the
+	 * gzip stream and extract individual deflate blocks.
 	 */
 	if ((ret = create_write_record(1, 0, gzip_data, file_size, file_size,
 	    outfd, &zc)) != 0) {
@@ -276,7 +263,7 @@ int
 zstream_do_import(int argc, char *argv[])
 {
 	char *filename = NULL;
-	char *dataset_name = "imported_gzip";
+	const char *dataset_name = "imported_gzip";
 	int c;
 
 	while ((c = getopt(argc, argv, "d:")) != -1) {
