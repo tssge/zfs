@@ -1292,8 +1292,34 @@ gcm_cycle_simd_impl(void)
 {
 	int n_tries = 10;
 
-	/* TODO: Add here vaes and avx2 with vaes beeing top most */
+	/*
+	 * Cycle through all supported SIMD implementations in priority order:
+	 * AVX2 VAES > AVX > SSE4.1 > None
+	 */
 
+#if CAN_USE_GCM_ASM >= 2
+	if (gcm_avx2_will_work() == B_TRUE) {
+		for (int i = 0; i < n_tries; ++i) {
+			if (atomic_cas_32(&GCM_SIMD_IMPL_READ,
+			    GSI_NONE, GSI_ISALC_SSE) == GSI_NONE)
+				return (GSI_ISALC_SSE);
+
+			if (atomic_cas_32(&GCM_SIMD_IMPL_READ,
+			    GSI_ISALC_SSE, GSI_OSSL_AVX) == GSI_ISALC_SSE)
+				return (GSI_OSSL_AVX);
+
+			if (atomic_cas_32(&GCM_SIMD_IMPL_READ,
+			    GSI_OSSL_AVX, GSI_AVX2) == GSI_OSSL_AVX)
+				return (GSI_AVX2);
+
+			if (atomic_cas_32(&GCM_SIMD_IMPL_READ,
+			    GSI_AVX2, GSI_NONE) == GSI_AVX2)
+				return (GSI_NONE);
+		}
+		/* We failed to cycle, return current value. */
+		return (GCM_SIMD_IMPL_READ);
+	}
+#endif
 #ifdef CAN_USE_GCM_ASM_AVX
 	if (gcm_avx_will_work() == B_TRUE) {
 		for (int i = 0; i < n_tries; ++i) {
