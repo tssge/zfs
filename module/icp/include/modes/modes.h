@@ -37,25 +37,14 @@ extern "C" {
 
 /*
  * Does the build chain support all instructions needed for the GCM assembler
- * routines.
+ * routines. AVX support should imply AES-NI and PCLMULQDQ, but make sure
+ * anyhow.
  */
-#if defined(__x86_64__) && defined(HAVE_AES) && defined(HAVE_PCLMULQDQ)
-/* XXXX: does AES + PCLMULQDQ really imply at least SSE4_1? */
-#define	CAN_USE_GCM_ASM
-
-
-#if defined(HAVE_SSE4_1)
-#define	CAN_USE_GCM_ASM_SSE
-#endif
-#if defined(HAVE_AVX)
-#define	CAN_USE_GCM_ASM_AVX
+#if defined(__x86_64__) && defined(HAVE_AVX) && \
+    defined(HAVE_AES) && defined(HAVE_PCLMULQDQ)
+#define	CAN_USE_GCM_ASM (HAVE_VAES && HAVE_VPCLMULQDQ ? 2 : 1)
 extern boolean_t gcm_avx_can_use_movbe;
 #endif
-#if defined(HAVE_AVX2)
-#define	CAN_USE_GCM_ASM_AVX2
-#endif
-/* TODO: Add VAES/AVX512 */
-#endif /* defined(__x86_64__) && defined(HAVE_AES) && defined(HAVE_PCLMULQDQ) */
 
 #define	CCM_MODE			0x00000010
 #define	GCM_MODE			0x00000020
@@ -140,22 +129,15 @@ typedef struct ccm_ctx {
 #define	ccm_copy_to		ccm_common.cc_copy_to
 #define	ccm_flags		ccm_common.cc_flags
 
-#if defined(CAN_USE_GCM_ASM)
-/*
- * enum gcm_simd_impl holds the types of the implemented gcm asm routines for
- * the various x86 SIMD extensions. Please note that other parts of the code
- * depends on the order given below, so do not change the order and append new
- * implementations at the end, but before GSI_NUM_IMPL.
- */
-typedef enum gcm_simd_impl {
-	GSI_NONE,
-	GSI_OSSL_AVX,
-	GSI_AVX2,
-	GSI_ISALC_SSE,
-	GSI_NUM_IMPL
-} gcm_simd_impl_t;
-
-#endif /* if defined(CAN_USE_GCM_ASM) */
+#ifdef CAN_USE_GCM_ASM
+typedef enum gcm_impl {
+	GCM_IMPL_GENERIC = 0,
+	GCM_IMPL_AVX,
+	GCM_IMPL_AVX2,
+	GCM_IMPL_ISALC_SSE,
+	GCM_IMPL_MAX,
+} gcm_impl;
+#endif
 
 /*
  * gcm_tag_len:		Length of authentication tag.
@@ -202,7 +184,7 @@ typedef struct gcm_ctx {
 	uint64_t gcm_len_a_len_c[2];
 	uint8_t *gcm_pt_buf;
 #ifdef CAN_USE_GCM_ASM
-	gcm_simd_impl_t gcm_simd_impl;
+	enum gcm_impl impl;
 #endif
 } gcm_ctx_t;
 
