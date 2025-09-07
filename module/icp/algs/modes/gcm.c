@@ -36,11 +36,7 @@
 #include <aes/aes_impl.h>
 #endif
 
-#ifdef DEBUG_GCM_ASM
-/* Can't attach to inline funcs with bpftrace */
-#undef	inline
-#define	inline __attribute__((__noinline__))
-#endif
+
 
 #define	GHASH(c, d, t, o)				      \
 	xor_block((uint8_t *)(d), (uint8_t *)(c)->gcm_ghash); \
@@ -159,42 +155,7 @@ get_isalc_key_size(const gcm_ctx_t *ctx)
 }
 #endif /* ifdef CAN_USE_GCM_ASM_SSE */
 
-#ifdef DEBUG_GCM_ASM
-/*
- * Call this in gcm_init_ctx before doing anything else. The shadowed ctx
- * is stored in ctx->gcm_shadow_ctx.
- */
-static  __attribute__((__noinline__)) gcm_ctx_t *
-gcm_duplicate_ctx(gcm_ctx_t *ctx)
-{
-	ASSERT3P(ctx->gcm_pt_buf, ==, NULL);
-	ASSERT3P(ctx->gcm_shadow_ctx, ==, NULL); /* No nested ctxs allowed. */
 
-	gcm_ctx_t *new_ctx;
-	size_t sz = sizeof (gcm_ctx_t);
-
-	if ((new_ctx = kmem_zalloc(sz, KM_SLEEP)) == NULL)
-		return (NULL);
-
-	(void) memcpy(new_ctx, ctx, sz);
-	new_ctx->gcm_simd_impl = DEBUG_GCM_ASM;
-	size_t htab_len = gcm_simd_get_htab_size(new_ctx->gcm_simd_impl);
-	if (htab_len == 0) {
-		kmem_free(new_ctx, sz);
-		return (NULL);
-	}
-	new_ctx->gcm_htab_len = htab_len;
-	new_ctx->gcm_Htable = kmem_alloc(htab_len, KM_SLEEP);
-	if (new_ctx->gcm_Htable == NULL) {
-		kmem_free(new_ctx, sz);
-		return (NULL);
-	}
-	new_ctx->gcm_is_shadow = B_TRUE;
-
-	ctx->gcm_shadow_ctx = new_ctx;
-	return (new_ctx);
-}
-#endif /* ifndef DEBUG_GCM_ASM */
 
 static inline void gcm_init_isalc(gcm_ctx_t *, const uint8_t *, size_t,
     const uint8_t *, size_t);
@@ -1623,34 +1584,7 @@ out:
 	clear_fpu_regs();
 	kfpu_end();
 
-#ifdef DEBUG_GCM_ASM
-	if (ctx->gcm_shadow_ctx != NULL) {
-		gcm_ctx_t *sc = ctx->gcm_shadow_ctx;
 
-		(void) gcm_mode_encrypt_contiguous_blocks_isalc(
-		    sc, data, length, NULL);
-
-		if (ctx->gcm_remainder_len != sc->gcm_remainder_len) {
-			cmn_err(CE_WARN,
-			    "AVX vs SSE: encrypt: remainder_len differs!");
-		}
-		/*
-		 * Handling of partial GCM blocks differ between AVX and SSE,
-		 * so the tags will not match in this case.
-		 */
-		if (ctx->gcm_remainder_len == 0) {
-			/* Byte swap the SSE tag, it is in host byte order. */
-			uint64_t shadow_ghash[2];
-			shadow_ghash[0] = htonll(sc->gcm_ghash[1]);
-			shadow_ghash[1] = htonll(sc->gcm_ghash[0]);
-
-			if (memcmp(ghash, shadow_ghash, ctx->gcm_tag_len)) {
-				cmn_err(CE_WARN,
-				    "AVX vs SSE: encrypt: tags differ!");
-			}
-		}
-	}
-#endif
 
 out_nofpu:
 	if (ct_buf != NULL) {
@@ -1707,15 +1641,7 @@ gcm_encrypt_final_avx(gcm_ctx_t *ctx, crypto_data_t *out, size_t block_size)
 	clear_fpu_regs();
 	kfpu_end();
 
-#ifdef DEBUG_GCM_ASM
-	if (ctx->gcm_shadow_ctx != NULL) {
-		(void) gcm_encrypt_final_isalc(ctx->gcm_shadow_ctx, NULL);
-		if (memcmp(ghash, ctx->gcm_shadow_ctx->gcm_ghash,
-		    ctx->gcm_tag_len)) {
-			cmn_err(CE_WARN, "AVX vs SSE: enc_final: tags differ!");
-		}
-	}
-#endif
+
 	/* Output remainder. */
 	if (rem_len > 0) {
 		rv = crypto_put_output_data(remainder, out, rem_len);
@@ -1744,33 +1670,7 @@ gcm_decrypt_final_avx(gcm_ctx_t *ctx, crypto_data_t *out, size_t block_size)
 	ASSERT3S(((aes_key_t *)ctx->gcm_keysched)->ops->needs_byteswap, ==,
 	    B_FALSE);
 
-#ifdef DEBUG_GCM_ASM
-	/* Copy over the plaintext buf to the shadow context. */
-	if (ctx->gcm_shadow_ctx != NULL) {
-		gcm_ctx_t *sc = ctx->gcm_shadow_ctx;
-		size_t sc_buf_len = ctx->gcm_pt_buf_len;
-		uint8_t *sc_pt_buf = vmem_alloc(sc_buf_len, KM_SLEEP);
 
-		if (sc_pt_buf != NULL) {
-			memcpy(sc_pt_buf, ctx->gcm_pt_buf, sc_buf_len);
-			sc->gcm_pt_buf = sc_pt_buf;
-			sc->gcm_pt_buf_len = sc_buf_len;
-			sc->gcm_processed_data_len = sc_buf_len;
-			/* Not strictly needed, for completeness. */
-			sc->gcm_remainder_len = 0;
-		} else {
-			/*
-			 * Memory allocation failed, just drop this shadow
-			 * context and leave a note in the log.
-			 */
-			gcm_clear_ctx(sc);
-			kmem_free(sc, sizeof (gcm_ctx_t));
-			ctx->gcm_shadow_ctx = NULL;
-			cmn_err(CE_WARN,
-			    "Failed to alloc pt_buf for shadow context!");
-		}
-	}
-#endif /* DEBUG_GCM_ASM */
 
 	size_t chunk_size = (size_t)GCM_AVX_CHUNK_SIZE_READ;
 	size_t pt_len = ctx->gcm_processed_data_len - ctx->gcm_tag_len;
@@ -1859,21 +1759,7 @@ gcm_decrypt_final_avx(gcm_ctx_t *ctx, crypto_data_t *out, size_t block_size)
 	clear_fpu_regs();
 	kfpu_end();
 
-#ifdef DEBUG_GCM_ASM
-	if (ctx->gcm_shadow_ctx != NULL) {
-		(void) gcm_decrypt_final_isalc(ctx->gcm_shadow_ctx, NULL);
-		/* Ensure decrypted plaintext and tag are identical. */
-		if (memcmp(ctx->gcm_pt_buf, ctx->gcm_shadow_ctx->gcm_pt_buf,
-		    pt_len)) {
-			cmn_err(CE_WARN,
-			    "AVX vs SSE: decrypt: plaintexts differ!");
-		}
-		if (memcmp(ghash, ctx->gcm_shadow_ctx->gcm_ghash,
-		    ctx->gcm_tag_len)) {
-			cmn_err(CE_WARN, "AVX vs SSE: decrypt: tags differ!");
-		}
-	}
-#endif
+
 	/* Compare the input authentication tag with what we calculated. */
 	if (memcmp(&ctx->gcm_pt_buf[pt_len], ghash, ctx->gcm_tag_len)) {
 		/* They don't match. */
@@ -1969,20 +1855,7 @@ gcm_init_avx(gcm_ctx_t *ctx, const uint8_t *iv, size_t iv_len,
 	}
 	clear_fpu_regs();
 	kfpu_end();
-#ifdef DEBUG_GCM_ASM
-	if (gcm_duplicate_ctx(ctx) != NULL) {
-		gcm_init_isalc(ctx->gcm_shadow_ctx, iv, iv_len, auth_data,
-		    auth_data_len);
 
-		if (memcmp(ctx->gcm_J0, ctx->gcm_shadow_ctx->gcm_J0, 16)) {
-			cmn_err(CE_WARN, "AVX vs SSE: init: ICBs differ!");
-		}
-		if (memcmp(ctx->gcm_H, ctx->gcm_shadow_ctx->gcm_H, 16)) {
-			cmn_err(CE_WARN,
-			    "AVX vs SSE: init: hash keys differ!");
-		}
-	}
-#endif
 
 }
 #endif /* ifdef CAN_USE_GCM_ASM_AVX */
@@ -2080,11 +1953,6 @@ gcm_mode_encrypt_contiguous_blocks_isalc(gcm_ctx_t *ctx, const uint8_t *data,
 
 		kfpu_end();
 		datap += chunk_size;
-#ifdef DEBUG_GCM_ASM
-		if (ctx->gcm_is_shadow == B_TRUE) {
-			continue;
-		}
-#endif
 		rv = crypto_put_output_data(ct_buf, out, chunk_size);
 		if (rv != CRYPTO_SUCCESS) {
 			/* Indicate that we're done. */
@@ -2111,16 +1979,6 @@ gcm_mode_encrypt_contiguous_blocks_isalc(gcm_ctx_t *ctx, const uint8_t *data,
 		}
 
 		kfpu_end();
-
-#ifdef DEBUG_GCM_ASM
-		if (ctx->gcm_is_shadow == B_TRUE) {
-			if (ct_buf != NULL) {
-				vmem_free(ct_buf, ct_buf_size);
-			}
-			return (CRYPTO_SUCCESS);
-
-		}
-#endif
 		rv = crypto_put_output_data(ct_buf, out, bleft);
 		if (rv == CRYPTO_SUCCESS) {
 			out->cd_offset += bleft;
@@ -2210,11 +2068,6 @@ gcm_decrypt_final_isalc(gcm_ctx_t *ctx, crypto_data_t *out)
 		/* They don't match. */
 		return (CRYPTO_INVALID_MAC);
 	}
-#ifdef DEBUG_GCM_ASM
-	if (ctx->gcm_is_shadow == B_TRUE) {
-		return (CRYPTO_SUCCESS);
-	}
-#endif
 	int rv = crypto_put_output_data(ctx->gcm_pt_buf, out, pt_len);
 	if (rv != CRYPTO_SUCCESS) {
 		return (rv);
@@ -2238,12 +2091,9 @@ gcm_encrypt_final_isalc(gcm_ctx_t *ctx, crypto_data_t *out)
 {
 	uint64_t tag_len = ctx->gcm_tag_len;
 
-/* For security measures we pass NULL as the out pointer for shadow contexts. */
-#ifndef DEBUG_GCM_ASM
 	if (out->cd_length < tag_len) {
 		return (CRYPTO_DATA_LEN_RANGE);
 	}
-#endif
 
 	int key_size = get_isalc_key_size(ctx);
 
@@ -2260,12 +2110,6 @@ gcm_encrypt_final_isalc(gcm_ctx_t *ctx, crypto_data_t *out)
 		break;
 	}
 	kfpu_end();
-
-#ifdef DEBUG_GCM_ASM
-	if (ctx->gcm_is_shadow == B_TRUE) {
-		return (CRYPTO_SUCCESS);
-	}
-#endif
 
 	/* Write the tag out. */
 	uint8_t *ghash = (uint8_t *)ctx->gcm_ghash;
