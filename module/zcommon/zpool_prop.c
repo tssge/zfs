@@ -471,6 +471,11 @@ vdev_prop_init(void)
 	    PROP_READONLY, ZFS_TYPE_VDEV, "on | off", "TRIMSUP",
 	    boolean_table, sfeatures);
 
+	/* default number properties */
+	zprop_register_number(VDEV_PROP_ALLOC_PRIORITY, "alloc_priority", 100,
+	    PROP_DEFAULT, ZFS_TYPE_VDEV, "<0-255>", "ALLOCPRI", B_FALSE,
+	    sfeatures);
+
 	/* default index properties */
 	zprop_register_index(VDEV_PROP_FAILFAST, "failfast", B_TRUE,
 	    PROP_DEFAULT, ZFS_TYPE_VDEV, "on | off", "FAILFAST", boolean_table,
