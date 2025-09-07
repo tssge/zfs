@@ -357,6 +357,9 @@ get_isalc_gcm_keylen_index(const gcm_ctx_t *ctx)
 }
 
 static inline boolean_t gcm_sse_will_work(void);
+#ifdef CAN_USE_GCM_ASM_AVX2
+static inline boolean_t gcm_avx2_will_work(void);
+#endif
 
 #ifdef DEBUG_GCM_ASM
 /*
