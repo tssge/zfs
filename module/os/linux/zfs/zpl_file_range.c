@@ -136,7 +136,7 @@ zpl_copy_file_range(struct file *src_file, loff_t src_off,
 
 /*
  * Compare and deduplicate file ranges.
- * 
+ *
  * This function compares the content of two file ranges and if they are
  * identical, arranges for them to be backed by the same storage blocks.
  */
@@ -213,7 +213,7 @@ zpl_remap_file_range(struct file *src_file, loff_t src_off,
 		/* For dedup, we need to compare the ranges first */
 		ssize_t ret = zpl_dedupe_file_range_impl(src_file, src_off,
 		    dst_file, dst_off, len);
-		/* 
+		/*
 		 * For FIDEDUPERANGE (REMAP_FILE_DEDUP), 0 bytes processed
 		 * is a valid result (content differs), not an error.
 		 * Only return -EINVAL for partial matches (0 < ret < len).
@@ -272,8 +272,8 @@ zpl_dedupe_file_range(struct file *src_file, loff_t src_off,
 	if (len == 0)
 		len = i_size_read(file_inode(src_file)) - src_off;
 
-	/* 
-	 * For FIDEDUPERANGE, 0 bytes processed is a valid result 
+	/*
+	 * For FIDEDUPERANGE, 0 bytes processed is a valid result
 	 * (content differs), not an error.
 	 */
 	ssize_t ret = zpl_dedupe_file_range_impl(src_file, src_off,

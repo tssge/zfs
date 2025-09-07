@@ -2065,30 +2065,30 @@ zfs_clone_range_replay(znode_t *zp, uint64_t off, uint64_t len, uint64_t blksz,
 
 /*
  * Compare and deduplicate file ranges.
- * 
+ *
  * This function implements the FIDEDUPERANGE ioctl functionality.
  * It compares the content of source and destination ranges byte-by-byte,
  * and if they are identical, shares the storage blocks between them using
  * ZFS's block cloning mechanism.
- * 
+ *
  * The function performs the following steps:
  * 1. Validates input parameters and permissions
  * 2. Locks both ranges for reading
  * 3. Compares the data content byte-by-byte
  * 4. If data matches, re-locks destination for writing and deduplicates
- * 
+ *
  * Arguments:
  *   inzp    - source znode
  *   inoffp  - pointer to source offset (updated on success)
- *   outzp   - destination znode  
+ *   outzp   - destination znode
  *   outoffp - pointer to destination offset (updated on success)
  *   lenp    - pointer to length (updated to actual deduplicated length)
  *   cr      - credentials
- * 
+ *
  * Returns:
  *   0 on success (even if no bytes were deduplicated)
  *   error code on failure
- * 
+ *
  * On success, *lenp contains the number of bytes successfully deduplicated.
  * If the data doesn't match, *lenp will be set to 0.
  */
@@ -2179,8 +2179,11 @@ zfs_dedupe_range(znode_t *inzp, uint64_t *inoffp, znode_t *outzp,
 			zfs_exit_two(inzfsvfs, outzfsvfs, FTAG);
 			return (SET_ERROR(EINVAL));
 		}
-		
-		/* If it's the same file and same range, already "deduplicated" */
+
+		/*
+		 * If it's the same file and same range, already
+		 * "deduplicated"
+		 */
 		if (inoff == outoff && len > 0) {
 			*lenp = len;
 			zfs_exit_two(inzfsvfs, outzfsvfs, FTAG);
@@ -2194,18 +2197,17 @@ zfs_dedupe_range(znode_t *inzp, uint64_t *inoffp, znode_t *outzp,
 	if (zn_has_cached_data(outzp, outoff, outoff + len - 1))
 		zn_flush_cached_data(outzp, B_TRUE);
 
-	/* 
-	 * For efficient block-level deduplication, we should align to block 
+	/*
+	 * For efficient block-level deduplication, we should align to block
 	 * boundaries. However, we still allow unaligned comparisons.
 	 */
 	blksz = MIN(inzp->z_blksz, outzp->z_blksz);
-	
 	/*
 	 * For very small ranges, block alignment might not be beneficial.
 	 * For larger ranges, try to encourage block-aligned operations.
 	 */
 	if (len >= blksz && ((inoff % blksz) != 0 || (outoff % blksz) != 0)) {
-		/* 
+		/*
 		 * Ranges are not block-aligned. We can still compare them
 		 * but deduplication might be less efficient.
 		 */
@@ -2275,9 +2277,10 @@ zfs_dedupe_range(znode_t *inzp, uint64_t *inoffp, znode_t *outzp,
 
 		/* Compare the data */
 		if (memcmp(inbuf, outbuf, cmplen) != 0) {
-			/* 
+			/*
 			 * Data doesn't match - return success but indicate
-			 * that no bytes were deduplicated by setting length to 0
+			 * that no bytes were deduplicated by setting
+			 * length to 0
 			 */
 			*lenp = 0;
 			error = 0; /* This is not an error condition */
@@ -2289,27 +2292,28 @@ zfs_dedupe_range(znode_t *inzp, uint64_t *inoffp, znode_t *outzp,
 	vmem_free(outbuf, blksz);
 
 	if (error == 0 && *lenp > 0) {
-		/* 
-		 * Data matches! Now we need to get write locks and deduplicate.
-		 * We need to re-lock with write access for the destination.
+		/*
+		 * Data matches! Now we need to get write locks and
+		 * deduplicate. We need to re-lock with write access for the
+		 * destination.
 		 */
 		zfs_rangelock_exit(outlr);
 		zfs_rangelock_exit(inlr);
 
 		/* Re-lock with write access for destination */
 		if (inzp < outzp || (inzp == outzp && inoff < outoff)) {
-			inlr = zfs_rangelock_enter(&inzp->z_rangelock, inoff, len,
-			    RL_READER);
-			outlr = zfs_rangelock_enter(&outzp->z_rangelock, outoff, len,
-			    RL_WRITER);
+			inlr = zfs_rangelock_enter(&inzp->z_rangelock, inoff,
+			    len, RL_READER);
+			outlr = zfs_rangelock_enter(&outzp->z_rangelock,
+			    outoff, len, RL_WRITER);
 		} else {
-			outlr = zfs_rangelock_enter(&outzp->z_rangelock, outoff, len,
-			    RL_WRITER);
-			inlr = zfs_rangelock_enter(&inzp->z_rangelock, inoff, len,
-			    RL_READER);
+			outlr = zfs_rangelock_enter(&outzp->z_rangelock,
+			    outoff, len, RL_WRITER);
+			inlr = zfs_rangelock_enter(&inzp->z_rangelock, inoff,
+			    len, RL_READER);
 		}
 
-		/* 
+		/*
 		 * Data matches! Now we can deduplicate by cloning.
 		 * Since the data is identical, we can safely use clone_range
 		 * to deduplicate the blocks.
