@@ -226,8 +226,14 @@ gcm_encrypt_final(gcm_ctx_t *ctx, crypto_data_t *out, size_t block_size,
 {
 	(void) copy_block;
 #ifdef CAN_USE_GCM_ASM
-	if (ctx->impl != GCM_IMPL_GENERIC)
-		return (gcm_encrypt_final_avx(ctx, out, block_size));
+	if (ctx->impl != GCM_IMPL_GENERIC) {
+#ifdef CAN_USE_GCM_ASM_SSE
+		if (ctx->impl == GCM_IMPL_SSE4_1)
+			return (gcm_encrypt_final_sse4_1(ctx, out, block_size));
+		else
+#endif
+			return (gcm_encrypt_final_avx(ctx, out, block_size));
+	}
 #endif
 
 	const gcm_impl_ops_t *gops;
@@ -696,8 +702,16 @@ gcm_init_ctx(gcm_ctx_t *gcm_ctx, char *param,
 	 * implementation.
 	 */
 	if (gcm_ctx->impl != GCM_IMPL_GENERIC) {
-		rv = gcm_init_avx(gcm_ctx, iv, iv_len, aad, aad_len,
-		    block_size);
+#ifdef CAN_USE_GCM_ASM_SSE
+		if (gcm_ctx->impl == GCM_IMPL_SSE4_1) {
+			rv = gcm_init_sse4_1(gcm_ctx, iv, iv_len, aad, aad_len,
+			    block_size);
+		} else
+#endif
+		{
+			rv = gcm_init_avx(gcm_ctx, iv, iv_len, aad, aad_len,
+			    block_size);
+		}
 	}
 	else
 #endif /* ifdef CAN_USE_GCM_ASM */
@@ -1070,6 +1084,9 @@ typedef struct {
 
 extern void ASMABI clear_fpu_regs_avx(void);
 extern void ASMABI gcm_xor_avx(const uint8_t *src, uint8_t *dst);
+#ifdef CAN_USE_GCM_ASM_SSE
+extern void ASMABI gcm_xor_sse4_1(const uint8_t *src, uint8_t *dst);
+#endif
 extern void ASMABI aes_encrypt_intel(const uint32_t rk[], int nr,
     const uint32_t pt[4], uint32_t ct[4]);
 
@@ -1078,11 +1095,18 @@ extern void ASMABI gcm_init_htab_avx(uint64_t *Htable, const uint64_t H[2]);
 extern void ASMABI gcm_init_vpclmulqdq_avx2(uint128_t Htable[16],
     const uint64_t H[2]);
 #endif
+#ifdef CAN_USE_GCM_ASM_SSE
+extern void ASMABI gcm_init_htab_sse4_1(uint64_t *Htable, const uint64_t H[2]);
+#endif
 extern void ASMABI gcm_ghash_avx(uint64_t ghash[2], const uint64_t *Htable,
     const uint8_t *in, size_t len);
 #if CAN_USE_GCM_ASM >= 2
 extern void ASMABI gcm_ghash_vpclmulqdq_avx2(uint64_t ghash[2],
     const uint64_t *Htable, const uint8_t *in, size_t len);
+#endif
+#ifdef CAN_USE_GCM_ASM_SSE
+extern void ASMABI gcm_ghash_sse4_1(uint64_t ghash[2], const uint64_t *Htable,
+    const uint8_t *in, size_t len);
 #endif
 static inline void GHASH_AVX(gcm_ctx_t *ctx, const uint8_t *in, size_t len)
 {
@@ -1099,6 +1123,13 @@ static inline void GHASH_AVX(gcm_ctx_t *ctx, const uint8_t *in, size_t len)
 			    (const uint64_t *)ctx->gcm_Htable, in, len);
 			break;
 
+#ifdef CAN_USE_GCM_ASM_SSE
+		case GCM_IMPL_SSE4_1:
+			gcm_ghash_sse4_1(ctx->gcm_ghash,
+			    (const uint64_t *)ctx->gcm_Htable, in, len);
+			break;
+#endif
+
 		default:
 			VERIFY(B_FALSE);
 	}
@@ -1113,6 +1144,10 @@ extern void ASMABI aes_gcm_enc_update_vaes_avx2(const uint8_t *in,
     uint8_t *out, size_t len, const void *key, const uint8_t ivec[16],
     const uint128_t Htable[16], uint8_t Xi[16]);
 #endif
+#ifdef CAN_USE_GCM_ASM_SSE
+extern size_t ASMABI aesni_gcm_encrypt_sse4_1(const uint8_t *, uint8_t *, size_t,
+    const void *, uint64_t *, const uint64_t *Htable, uint64_t *);
+#endif
 
 typedef size_t ASMABI aesni_gcm_decrypt_impl(const uint8_t *, uint8_t *,
     size_t, const void *, uint64_t *, const uint64_t *Htable, uint64_t *);
@@ -1122,6 +1157,10 @@ extern size_t ASMABI aesni_gcm_decrypt(const uint8_t *, uint8_t *, size_t,
 extern void ASMABI aes_gcm_dec_update_vaes_avx2(const uint8_t *in,
     uint8_t *out, size_t len, const void *key, const uint8_t ivec[16],
     const uint128_t Htable[16], uint8_t Xi[16]);
+#endif
+#ifdef CAN_USE_GCM_ASM_SSE
+extern size_t ASMABI aesni_gcm_decrypt_sse4_1(const uint8_t *, uint8_t *, size_t,
+    const void *, uint64_t *, const uint64_t *Htable, uint64_t *);
 #endif
 
 static inline boolean_t
@@ -1252,6 +1291,15 @@ static size_t aesni_gcm_encrypt_avx(const uint8_t *in, uint8_t *out,
 	return (aesni_gcm_encrypt(in, out, len, key, iv, Xip));
 }
 
+#ifdef CAN_USE_GCM_ASM_SSE
+static size_t aesni_gcm_encrypt_sse4_1_impl(const uint8_t *in, uint8_t *out,
+    size_t len, const void *key, uint64_t *iv, const uint64_t *Htable,
+    uint64_t *Xip)
+{
+	return (aesni_gcm_encrypt_sse4_1(in, out, len, key, iv, Htable, Xip));
+}
+#endif
+
 #if CAN_USE_GCM_ASM >= 2
 // kSizeTWithoutLower4Bits is a mask that can be used to zero the lower four
 // bits of a |size_t|.
@@ -1306,6 +1354,10 @@ gcm_mode_encrypt_contiguous_blocks_avx(gcm_ctx_t *ctx, char *data,
 #if CAN_USE_GCM_ASM >= 2
 	    ctx->impl == GCM_IMPL_AVX2 ?
 	    aesni_gcm_encrypt_avx2 :
+#endif
+#ifdef CAN_USE_GCM_ASM_SSE
+	    ctx->impl == GCM_IMPL_SSE4_1 ?
+	    aesni_gcm_encrypt_sse4_1_impl :
 #endif
 	    aesni_gcm_encrypt_avx;
 	const aes_key_t *key = ((aes_key_t *)ctx->gcm_keysched);
@@ -1520,6 +1572,15 @@ static size_t aesni_gcm_decrypt_avx(const uint8_t *in, uint8_t *out,
 	return (aesni_gcm_decrypt(in, out, len, key, iv, Xip));
 }
 
+#ifdef CAN_USE_GCM_ASM_SSE
+static size_t aesni_gcm_decrypt_sse4_1_impl(const uint8_t *in, uint8_t *out,
+    size_t len, const void *key, uint64_t *iv, const uint64_t *Htable,
+    uint64_t *Xip)
+{
+	return (aesni_gcm_decrypt_sse4_1(in, out, len, key, iv, Htable, Xip));
+}
+#endif
+
 #if CAN_USE_GCM_ASM >= 2
 static size_t aesni_gcm_decrypt_avx2(const uint8_t *in, uint8_t *out,
     size_t len, const void *key, uint64_t *iv, const uint64_t *Htable,
@@ -1552,6 +1613,10 @@ gcm_decrypt_final_avx(gcm_ctx_t *ctx, crypto_data_t *out, size_t block_size)
 #if CAN_USE_GCM_ASM >= 2
 	    ctx->impl == GCM_IMPL_AVX2 ?
 	    aesni_gcm_decrypt_avx2 :
+#endif
+#ifdef CAN_USE_GCM_ASM_SSE
+	    ctx->impl == GCM_IMPL_SSE4_1 ?
+	    aesni_gcm_decrypt_sse4_1_impl :
 #endif
 	    aesni_gcm_decrypt_avx;
 	size_t pt_len = ctx->gcm_processed_data_len - ctx->gcm_tag_len;
@@ -1706,6 +1771,11 @@ gcm_init_avx(gcm_ctx_t *ctx, const uint8_t *iv, size_t iv_len,
 		gcm_init_vpclmulqdq_avx2((uint128_t *)ctx->gcm_Htable, H);
 	} else
 #endif /* if CAN_USE_GCM_ASM >= 2 */
+#ifdef CAN_USE_GCM_ASM_SSE
+	if (ctx->impl == GCM_IMPL_SSE4_1) {
+		gcm_init_htab_sse4_1(ctx->gcm_Htable, H);
+	} else
+#endif
 	{
 		gcm_init_htab_avx(ctx->gcm_Htable, H);
 	}
@@ -1766,6 +1836,156 @@ gcm_init_avx(gcm_ctx_t *ctx, const uint8_t *iv, size_t iv_len,
 	kfpu_end();
 	return (CRYPTO_SUCCESS);
 }
+
+#ifdef CAN_USE_GCM_ASM_SSE
+static int
+gcm_init_sse4_1(gcm_ctx_t *ctx, const uint8_t *iv, size_t iv_len,
+    const uint8_t *auth_data, size_t auth_data_len, size_t block_size)
+{
+	uint8_t *cb = (uint8_t *)ctx->gcm_cb;
+	uint64_t *H = ctx->gcm_H;
+	const void *keysched = ((aes_key_t *)ctx->gcm_keysched)->encr_ks.ks32;
+	int aes_rounds = ((aes_key_t *)ctx->gcm_keysched)->nr;
+	const uint8_t *datap = auth_data;
+	size_t chunk_size = (size_t)GCM_CHUNK_SIZE_READ;
+	size_t bleft;
+
+	ASSERT(block_size == GCM_BLOCK_LEN);
+	ASSERT3S(((aes_key_t *)ctx->gcm_keysched)->ops->needs_byteswap, ==,
+	    B_FALSE);
+
+	size_t htab_len = (2 * 6 * sizeof (uint128_t));
+
+	ctx->gcm_Htable = kmem_alloc(htab_len, KM_SLEEP);
+	if (ctx->gcm_Htable == NULL) {
+		return (CRYPTO_HOST_MEMORY);
+	}
+
+	/* Init H (encrypt zero block) and create the initial counter block. */
+	memset(H, 0, sizeof (ctx->gcm_H));
+	kfpu_begin();
+	aes_encrypt_intel(keysched, aes_rounds,
+	    (const uint32_t *)H, (uint32_t *)H);
+
+	gcm_init_htab_sse4_1(ctx->gcm_Htable, H);
+
+	if (iv_len == 12) {
+		memcpy(cb, iv, 12);
+		cb[12] = 0;
+		cb[13] = 0;
+		cb[14] = 0;
+		cb[15] = 1;
+		/* We need the ICB later. */
+		memcpy(ctx->gcm_J0, cb, sizeof (ctx->gcm_J0));
+	} else {
+		/*
+		 * Most consumers use 12 byte IVs, so it's OK to use the
+		 * original routines for other IV sizes, just avoid nesting
+		 * kfpu_begin calls.
+		 */
+		clear_fpu_regs();
+		kfpu_end();
+		gcm_format_initial_blocks(iv, iv_len, ctx, block_size,
+		    aes_copy_block, aes_xor_block);
+		kfpu_begin();
+	}
+
+	memset(ctx->gcm_ghash, 0, sizeof (ctx->gcm_ghash));
+
+	/* Openssl post increments the counter, adjust for that. */
+	gcm_incr_counter_block(ctx);
+
+	/* Ghash AAD in chunk_size blocks. */
+	for (bleft = auth_data_len; bleft >= chunk_size; bleft -= chunk_size) {
+		GHASH_AVX(ctx, datap, chunk_size);
+		datap += chunk_size;
+		clear_fpu_regs();
+		kfpu_end();
+		kfpu_begin();
+	}
+	/* Ghash the remainder and handle possible incomplete GCM block. */
+	if (bleft > 0) {
+		size_t incomp = bleft % block_size;
+
+		bleft -= incomp;
+		if (bleft > 0) {
+			GHASH_AVX(ctx, datap, bleft);
+			datap += bleft;
+		}
+		if (incomp > 0) {
+			/* Zero pad and hash incomplete last block. */
+			uint8_t *authp = (uint8_t *)ctx->gcm_tmp;
+
+			memset(authp, 0, block_size);
+			memcpy(authp, datap, incomp);
+			GHASH_AVX(ctx, authp, block_size);
+		}
+	}
+	clear_fpu_regs();
+	kfpu_end();
+	return (CRYPTO_SUCCESS);
+}
+
+static int
+gcm_encrypt_final_sse4_1(gcm_ctx_t *ctx, crypto_data_t *out, size_t block_size)
+{
+	uint8_t *ghash = (uint8_t *)ctx->gcm_ghash;
+	uint32_t *J0 = (uint32_t *)ctx->gcm_J0;
+	uint8_t *remainder = (uint8_t *)ctx->gcm_remainder;
+	size_t rem_len = ctx->gcm_remainder_len;
+	const void *keysched = ((aes_key_t *)ctx->gcm_keysched)->encr_ks.ks32;
+	int aes_rounds = ((aes_key_t *)keysched)->nr;
+	int rv;
+
+	ASSERT(block_size == GCM_BLOCK_LEN);
+	ASSERT3S(((aes_key_t *)ctx->gcm_keysched)->ops->needs_byteswap, ==,
+	    B_FALSE);
+
+	if (out->cd_length < (rem_len + ctx->gcm_tag_len)) {
+		return (CRYPTO_DATA_LEN_RANGE);
+	}
+
+	kfpu_begin();
+	/* Pad last incomplete block with zeros, encrypt and hash. */
+	if (rem_len > 0) {
+		uint8_t *tmp = (uint8_t *)ctx->gcm_tmp;
+		const uint32_t *cb = (uint32_t *)ctx->gcm_cb;
+
+		aes_encrypt_intel(keysched, aes_rounds, cb, (uint32_t *)tmp);
+		memset(remainder + rem_len, 0, block_size - rem_len);
+		for (int i = 0; i < rem_len; i++) {
+			remainder[i] ^= tmp[i];
+		}
+		GHASH_AVX(ctx, remainder, block_size);
+		ctx->gcm_processed_data_len += rem_len;
+		/* No need to increment counter_block, it's the last block. */
+	}
+	/* Finish tag. */
+	ctx->gcm_len_a_len_c[1] =
+	    htonll(CRYPTO_BYTES2BITS(ctx->gcm_processed_data_len));
+	GHASH_AVX(ctx, (const uint8_t *)ctx->gcm_len_a_len_c, block_size);
+	aes_encrypt_intel(keysched, aes_rounds, J0, J0);
+
+	gcm_xor_sse4_1((uint8_t *)J0, ghash);
+	clear_fpu_regs();
+	kfpu_end();
+
+	/* Output remainder. */
+	if (rem_len > 0) {
+		rv = crypto_put_output_data(remainder, out, rem_len);
+		if (rv != CRYPTO_SUCCESS)
+			return (rv);
+	}
+	out->cd_offset += rem_len;
+	ctx->gcm_remainder_len = 0;
+	rv = crypto_put_output_data(ghash, out, ctx->gcm_tag_len);
+	if (rv != CRYPTO_SUCCESS)
+		return (rv);
+
+	out->cd_offset += ctx->gcm_tag_len;
+	return (CRYPTO_SUCCESS);
+}
+#endif
 
 #if defined(_KERNEL)
 static int
