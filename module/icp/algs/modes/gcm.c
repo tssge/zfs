@@ -283,7 +283,7 @@ static int gcm_mode_encrypt_contiguous_blocks_avx(gcm_ctx_t *, const uint8_t *,
 
 static int gcm_encrypt_final_avx(gcm_ctx_t *, crypto_data_t *, size_t);
 static int gcm_decrypt_final_avx(gcm_ctx_t *, crypto_data_t *, size_t);
-static void gcm_init_avx(gcm_ctx_t *, const uint8_t *, size_t, const uint8_t *,
+static int gcm_init_avx(gcm_ctx_t *, const uint8_t *, size_t, const uint8_t *,
 	size_t, size_t);
 #endif /* ifdef CAN_USE_GCM_ASM_AVX */
 #endif /* ifdef CAN_USE_GCM_ASM */
@@ -1056,6 +1056,16 @@ gcm_impl_get_ops(void)
 	return (ops);
 }
 
+#if CAN_USE_GCM_ASM >= 2
+static inline boolean_t
+gcm_avx2_will_work(void)
+{
+	return (kfpu_allowed() &&
+	    zfs_avx2_available() && zfs_vaes_available() &&
+	    zfs_vpclmulqdq_available());
+}
+#endif
+
 /*
  * Initialize all supported implementations.
  */
@@ -1504,13 +1514,6 @@ extern void ASMABI aes_gcm_dec_update_vaes_avx2(const uint8_t *in,
     const uint128_t Htable[16], uint8_t Xi[16]);
 #endif
 
-static inline boolean_t
-gcm_avx2_will_work(void)
-{
-	return (kfpu_allowed() &&
-	    zfs_avx2_available() && zfs_vaes_available() &&
-	    zfs_vpclmulqdq_available());
-}
 
 static inline boolean_t
 gcm_avx_will_work(void)
@@ -1565,7 +1568,8 @@ static inline void CRYPTO_store_u32_be(void *out, uint32_t v) {
 	memcpy(out, &v, sizeof (v));
 }
 
-static size_t aesni_gcm_encrypt_avx2(const uint8_t *in, uint8_t *out,
+static size_t __attribute__((unused))
+aesni_gcm_encrypt_avx2(const uint8_t *in, uint8_t *out,
     size_t len, const void *key, uint64_t *iv, const uint64_t *Htable,
     uint64_t *Xip)
 {
@@ -1808,7 +1812,8 @@ static size_t aesni_gcm_decrypt_avx(const uint8_t *in, uint8_t *out,
 #endif /* ifdef CAN_USE_GCM_ASM_AVX */
 
 #if CAN_USE_GCM_ASM >= 2
-static size_t aesni_gcm_decrypt_avx2(const uint8_t *in, uint8_t *out,
+static size_t __attribute__((unused))
+aesni_gcm_decrypt_avx2(const uint8_t *in, uint8_t *out,
     size_t len, const void *key, uint64_t *iv, const uint64_t *Htable,
     uint64_t *Xip)
 {
