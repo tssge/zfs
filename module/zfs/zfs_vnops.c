@@ -2066,9 +2066,31 @@ zfs_clone_range_replay(znode_t *zp, uint64_t off, uint64_t len, uint64_t blksz,
 /*
  * Compare and deduplicate file ranges.
  * 
- * This function compares the content of source and destination ranges,
- * and if they are identical, shares the storage blocks between them.
- * This is the implementation for FIDEDUPERANGE ioctl.
+ * This function implements the FIDEDUPERANGE ioctl functionality.
+ * It compares the content of source and destination ranges byte-by-byte,
+ * and if they are identical, shares the storage blocks between them using
+ * ZFS's block cloning mechanism.
+ * 
+ * The function performs the following steps:
+ * 1. Validates input parameters and permissions
+ * 2. Locks both ranges for reading
+ * 3. Compares the data content byte-by-byte
+ * 4. If data matches, re-locks destination for writing and deduplicates
+ * 
+ * Arguments:
+ *   inzp    - source znode
+ *   inoffp  - pointer to source offset (updated on success)
+ *   outzp   - destination znode  
+ *   outoffp - pointer to destination offset (updated on success)
+ *   lenp    - pointer to length (updated to actual deduplicated length)
+ *   cr      - credentials
+ * 
+ * Returns:
+ *   0 on success (even if no bytes were deduplicated)
+ *   error code on failure
+ * 
+ * On success, *lenp contains the number of bytes successfully deduplicated.
+ * If the data doesn't match, *lenp will be set to 0.
  */
 int
 zfs_dedupe_range(znode_t *inzp, uint64_t *inoffp, znode_t *outzp,
@@ -2157,6 +2179,13 @@ zfs_dedupe_range(znode_t *inzp, uint64_t *inoffp, znode_t *outzp,
 			zfs_exit_two(inzfsvfs, outzfsvfs, FTAG);
 			return (SET_ERROR(EINVAL));
 		}
+		
+		/* If it's the same file and same range, already "deduplicated" */
+		if (inoff == outoff && len > 0) {
+			*lenp = len;
+			zfs_exit_two(inzfsvfs, outzfsvfs, FTAG);
+			return (0);
+		}
 	}
 
 	/* Flush any cached data */
@@ -2164,6 +2193,23 @@ zfs_dedupe_range(znode_t *inzp, uint64_t *inoffp, znode_t *outzp,
 		zn_flush_cached_data(inzp, B_TRUE);
 	if (zn_has_cached_data(outzp, outoff, outoff + len - 1))
 		zn_flush_cached_data(outzp, B_TRUE);
+
+	/* 
+	 * For efficient block-level deduplication, we should align to block 
+	 * boundaries. However, we still allow unaligned comparisons.
+	 */
+	blksz = MIN(inzp->z_blksz, outzp->z_blksz);
+	
+	/*
+	 * For very small ranges, block alignment might not be beneficial.
+	 * For larger ranges, try to encourage block-aligned operations.
+	 */
+	if (len >= blksz && ((inoff % blksz) != 0 || (outoff % blksz) != 0)) {
+		/* 
+		 * Ranges are not block-aligned. We can still compare them
+		 * but deduplication might be less efficient.
+		 */
+	}
 
 	/* Lock ranges for comparison */
 	if (inzp < outzp || (inzp == outzp && inoff < outoff)) {
@@ -2179,7 +2225,6 @@ zfs_dedupe_range(znode_t *inzp, uint64_t *inoffp, znode_t *outzp,
 	}
 
 	/* Use smaller block size for comparison buffer */
-	blksz = MIN(inzp->z_blksz, outzp->z_blksz);
 	blksz = MIN(blksz, 1024 * 1024); /* Cap at 1MB for memory usage */
 
 	/* Allocate comparison buffers */
