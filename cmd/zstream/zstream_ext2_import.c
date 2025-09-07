@@ -60,6 +60,7 @@
 #define	EXT2_ROOT_INODE		2
 
 /* Inode types */
+#define	EXT2_S_IFMT	0xF000	/* File type mask */
 #define	EXT2_S_IFREG	0x8000	/* Regular file */
 #define	EXT2_S_IFDIR	0x4000	/* Directory */
 #define	EXT2_S_IFLNK	0xA000	/* Symbolic link */
@@ -489,7 +490,7 @@ ext2_read_directory_entries(ext2_import_ctx_t *ctx, ext2_inode_t *dir_inode,
 	uint32_t count = 0;
 	uint32_t offset = 0;
 
-	if ((dir_inode->i_mode & EXT2_S_IFDIR) == 0) {
+	if ((dir_inode->i_mode & EXT2_S_IFMT) != EXT2_S_IFDIR) {
 		fprintf(stderr, "Inode is not a directory\n");
 		return (-1);
 	}
@@ -792,7 +793,8 @@ write_stream_begin(ext2_import_ctx_t *ctx)
 	drrb->drr_versioninfo = DMU_SUBSTREAM;
 	drrb->drr_creation_time = time(NULL);
 	drrb->drr_type = DMU_OST_ZFS;
-	strlcpy(drrb->drr_toname, ctx->dataset_name, sizeof (drrb->drr_toname));
+	strlcpy(drrb->drr_toname, ctx->dataset_name,
+	    sizeof (drrb->drr_toname));
 	drrb->drr_toguid = 0;  /* Will be assigned by receiving system */
 
 	/* Write the record */
@@ -875,8 +877,64 @@ process_file_inode(ext2_import_ctx_t *ctx, uint32_t inode_num,
 }
 
 /*
- * Process a directory inode recursively
+ * Process a symbolic link inode and create ZFS symlink object
  */
+static int
+process_symlink_inode(ext2_import_ctx_t *ctx, uint32_t inode_num,
+    ext2_inode_t *inode, const char *path)
+{
+	uint8_t *link_target = NULL;
+	uint32_t target_size = 0;
+	uint64_t object_id = ctx->next_object_id++;
+	char link_data[PATH_MAX];
+
+	if (ctx->verbose) {
+		printf("Processing symlink: %s (inode %u, size %u bytes)\n",
+		    path, inode_num, inode->i_size);
+	}
+
+	/* Read symlink target */
+	if (inode->i_size < 60) {
+		/* Fast symlink - stored in inode */
+		memcpy(link_data, (char *)inode->i_block, inode->i_size);
+		link_data[inode->i_size] = '\0';
+	} else {
+		/* Slow symlink - stored in data blocks */
+		if (ext2_read_file_content(ctx, inode, &link_target,
+		    &target_size) != 0) {
+			fprintf(stderr, "Failed to read symlink target for %s\n",
+			    path);
+			return (-1);
+		}
+		if (target_size >= PATH_MAX) {
+			fprintf(stderr, "Symlink target too long for %s\n", path);
+			free(link_target);
+			return (-1);
+		}
+		memcpy(link_data, link_target, target_size);
+		link_data[target_size] = '\0';
+		free(link_target);
+	}
+
+	/* Create ZFS symlink object */
+	if (write_object_record(ctx, object_id, DMU_OT_PLAIN_FILE_CONTENTS,
+	    SPA_OLD_MAXBLOCKSIZE) != 0) {
+		return (-1);
+	}
+
+	/* Write symlink content */
+	if (write_file_content(ctx, object_id, (uint8_t *)link_data,
+	    strlen(link_data)) != 0) {
+		return (-1);
+	}
+
+	if (ctx->verbose) {
+		printf("Created ZFS symlink object %lu for %s -> %s\n",
+		    object_id, path, link_data);
+	}
+
+	return (0);
+}
 static int
 process_directory_inode(ext2_import_ctx_t *ctx, uint32_t inode_num,
     ext2_inode_t *inode, const char *path)
@@ -931,31 +989,42 @@ process_directory_inode(ext2_import_ctx_t *ctx, uint32_t inode_num,
 			continue;
 		}
 
+		if (ctx->verbose) {
+			printf("Child %s: inode %u, mode 0%o, size %u\n",
+			    child_path, entry->inode, child_inode.i_mode,
+			    child_inode.i_size);
+		}
+
 		/* Process based on file type */
-		if ((child_inode.i_mode & EXT2_S_IFDIR) != 0) {
+		uint16_t file_type = child_inode.i_mode & EXT2_S_IFMT;
+		if (file_type == EXT2_S_IFDIR) {
 			/* Recursively process subdirectory */
 			if (process_directory_inode(ctx, entry->inode, &child_inode,
 			    child_path) != 0) {
 				fprintf(stderr, "Failed to process directory %s\n", child_path);
 				/* Continue with other entries */
 			}
-		} else if ((child_inode.i_mode & EXT2_S_IFREG) != 0) {
+		} else if (file_type == EXT2_S_IFREG) {
 			/* Process regular file */
 			if (process_file_inode(ctx, entry->inode, &child_inode,
 			    child_path) != 0) {
-				fprintf(stderr, "Failed to process file %s\n", child_path);
+				fprintf(stderr, "Failed to process file %s\n",
+				    child_path);
 				/* Continue with other entries */
 			}
-		} else if ((child_inode.i_mode & EXT2_S_IFLNK) != 0) {
+		} else if (file_type == EXT2_S_IFLNK) {
 			/* Process symbolic link */
-			if (ctx->verbose) {
-				printf("Skipping symbolic link: %s (not yet supported)\n",
+			if (process_symlink_inode(ctx, entry->inode, &child_inode,
+			    child_path) != 0) {
+				fprintf(stderr, "Failed to process symlink %s\n",
 				    child_path);
+				/* Continue with other entries */
 			}
 		} else {
 			if (ctx->verbose) {
-				printf("Skipping special file: %s (mode 0%o)\n",
-				    child_path, child_inode.i_mode);
+				printf("Skipping special file: %s (mode 0%o, "
+				    "type 0%o)\n", child_path, child_inode.i_mode,
+				    file_type);
 			}
 		}
 
