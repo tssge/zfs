@@ -154,18 +154,19 @@ typedef enum gcm_simd_impl {
 	GSI_NONE,
 	GSI_OSSL_AVX,
 	GSI_ISALC_SSE,
-#ifdef CAN_USE_GCM_ASM_AVX2
-	GSI_ISALC_AVX2,
-#endif
 	GSI_NUM_IMPL
 } gcm_simd_impl_t;
 
 #define	GSI_ISALC_FIRST_IMPL	((int)GSI_ISALC_SSE)
-#ifdef CAN_USE_GCM_ASM_AVX2
-#define	GSI_ISALC_LAST_IMPL	((int)GSI_ISALC_AVX2)
-#else
 #define	GSI_ISALC_LAST_IMPL	((int)GSI_ISALC_SSE)
-#endif
+
+/*
+ * XXXX: Serves as a template to remind us what to do if adding an isalc impl
+ * #ifdef CAN_USE_GCM_ASM_AVX2
+ * #undef GSI_ISALC_LAST_IMPL
+ * #define	GSI_ISALC_LAST_IMPL	((int)GSI_ISALC_AVX2)
+ * #endif
+ */
 
 #define	GSI_ISALC_NUM_IMPL	(GSI_ISALC_LAST_IMPL - GSI_ISALC_FIRST_IMPL +1)
 

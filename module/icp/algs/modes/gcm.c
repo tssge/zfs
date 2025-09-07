@@ -56,10 +56,7 @@
 #ifdef CAN_USE_GCM_ASM_SSE
 #define	IMPL_SSE4_1	(UINT32_MAX-3)
 #endif
-#ifdef CAN_USE_GCM_ASM_AVX2
-#define	IMPL_AVX2	(UINT32_MAX-4)
-#endif
-/* TODO: add VAES */
+/* TODO: add AVX2, VAES */
 
 #define	GCM_IMPL_READ(i) (*(volatile uint32_t *) &(i))
 static uint32_t icp_gcm_impl = IMPL_FASTEST;
@@ -157,61 +154,6 @@ extern void ASMABI icp_isalc_gcm_dec_256_sse(gcm_ctx_t *ctx, uint8_t *out,
 typedef void ASMABI (*isalc_gcm_dec_fp)(gcm_ctx_t *, uint8_t *, const uint8_t *,
     uint64_t, const uint8_t *, const uint8_t *, uint64_t, uint64_t);
 
-#ifdef CAN_USE_GCM_ASM_AVX2
-extern void ASMABI icp_isalc_gcm_precomp_128_avx2(gcm_ctx_t *ctx);
-extern void ASMABI icp_isalc_gcm_precomp_192_avx2(gcm_ctx_t *ctx);
-extern void ASMABI icp_isalc_gcm_precomp_256_avx2(gcm_ctx_t *ctx);
-
-extern void ASMABI icp_isalc_gcm_init_128_avx2(gcm_ctx_t *ctx, const uint8_t *iv,
-    const uint8_t *aad, uint64_t aad_len, uint64_t tag_len);
-extern void ASMABI icp_isalc_gcm_init_192_avx2(gcm_ctx_t *ctx, const uint8_t *iv,
-    const uint8_t *aad, uint64_t aad_len, uint64_t tag_len);
-extern void ASMABI icp_isalc_gcm_init_256_avx2(gcm_ctx_t *ctx, const uint8_t *iv,
-    const uint8_t *aad, uint64_t aad_len, uint64_t tag_len);
-
-extern void ASMABI icp_isalc_gcm_enc_128_update_avx2(gcm_ctx_t *ctx,
-    uint8_t *out, const uint8_t *in, uint64_t plaintext_len);
-extern void ASMABI icp_isalc_gcm_enc_192_update_avx2(gcm_ctx_t *ctx,
-    uint8_t *out, const uint8_t *in, uint64_t plaintext_len);
-extern void ASMABI icp_isalc_gcm_enc_256_update_avx2(gcm_ctx_t *ctx,
-    uint8_t *out, const uint8_t *in, uint64_t plaintext_len);
-
-extern void ASMABI icp_isalc_gcm_dec_128_update_avx2(gcm_ctx_t *ctx,
-    uint8_t *out, const uint8_t *in, uint64_t plaintext_len);
-extern void ASMABI icp_isalc_gcm_dec_192_update_avx2(gcm_ctx_t *ctx,
-    uint8_t *out, const uint8_t *in, uint64_t plaintext_len);
-extern void ASMABI icp_isalc_gcm_dec_256_update_avx2(gcm_ctx_t *ctx,
-    uint8_t *out, const uint8_t *in, uint64_t plaintext_len);
-
-extern void ASMABI icp_isalc_gcm_enc_128_finalize_avx2(gcm_ctx_t *ctx);
-extern void ASMABI icp_isalc_gcm_enc_192_finalize_avx2(gcm_ctx_t *ctx);
-extern void ASMABI icp_isalc_gcm_enc_256_finalize_avx2(gcm_ctx_t *ctx);
-
-extern void ASMABI icp_isalc_gcm_dec_128_finalize_avx2(gcm_ctx_t *ctx);
-extern void ASMABI icp_isalc_gcm_dec_192_finalize_avx2(gcm_ctx_t *ctx);
-extern void ASMABI icp_isalc_gcm_dec_256_finalize_avx2(gcm_ctx_t *ctx);
-
-extern void ASMABI icp_isalc_gcm_enc_128_avx2(gcm_ctx_t *ctx, uint8_t *out,
-    const uint8_t *in, uint64_t plaintext_len, const uint8_t *iv,
-    const uint8_t *aad, uint64_t aad_len, uint64_t tag_len);
-extern void ASMABI icp_isalc_gcm_enc_192_avx2(gcm_ctx_t *ctx, uint8_t *out,
-    const uint8_t *in, uint64_t plaintext_len, const uint8_t *iv,
-    const uint8_t *aad, uint64_t aad_len, uint64_t tag_len);
-extern void ASMABI icp_isalc_gcm_enc_256_avx2(gcm_ctx_t *ctx, uint8_t *out,
-    const uint8_t *in, uint64_t plaintext_len, const uint8_t *iv,
-    const uint8_t *aad, uint64_t aad_len, uint64_t tag_len);
-
-extern void ASMABI icp_isalc_gcm_dec_128_avx2(gcm_ctx_t *ctx, uint8_t *out,
-    const uint8_t *in, uint64_t plaintext_len, const uint8_t *iv,
-    const uint8_t *aad, uint64_t aad_len, uint64_t tag_len);
-extern void ASMABI icp_isalc_gcm_dec_192_avx2(gcm_ctx_t *ctx, uint8_t *out,
-    const uint8_t *in, uint64_t plaintext_len, const uint8_t *iv,
-    const uint8_t *aad, uint64_t aad_len, uint64_t tag_len);
-extern void ASMABI icp_isalc_gcm_dec_256_avx2(gcm_ctx_t *ctx, uint8_t *out,
-    const uint8_t *in, uint64_t plaintext_len, const uint8_t *iv,
-    const uint8_t *aad, uint64_t aad_len, uint64_t tag_len);
-#endif
-
 /* struct isalc_ops holds arrays for all isalc asm functions ... */
 typedef struct isalc_gcm_ops {
 	isalc_gcm_precomp_fp		igo_precomp[GSI_ISALC_NUM_IMPL][3];
@@ -229,81 +171,49 @@ static isalc_gcm_ops_t isalc_ops = {
 		[0][0] = icp_isalc_gcm_precomp_128_sse,
 		[0][1] = icp_isalc_gcm_precomp_192_sse,
 		[0][2] = icp_isalc_gcm_precomp_256_sse,
-#ifdef CAN_USE_GCM_ASM_AVX2
-		[1][0] = icp_isalc_gcm_precomp_128_avx2,
-		[1][1] = icp_isalc_gcm_precomp_192_avx2,
-		[1][2] = icp_isalc_gcm_precomp_256_avx2,
-#endif
+		/* TODO: add [1][0..2] for AVX2 ... */
 	},
 	.igo_init = {
 		[0][0] = icp_isalc_gcm_init_128_sse,
 		[0][1] = icp_isalc_gcm_init_192_sse,
 		[0][2] = icp_isalc_gcm_init_256_sse,
-#ifdef CAN_USE_GCM_ASM_AVX2
-		[1][0] = icp_isalc_gcm_init_128_avx2,
-		[1][1] = icp_isalc_gcm_init_192_avx2,
-		[1][2] = icp_isalc_gcm_init_256_avx2,
-#endif
+		/* TODO: add [1][0..2] for AVX2 ... */
 	},
 	.igo_enc_update = {
 		[0][0] = icp_isalc_gcm_enc_128_update_sse,
 		[0][1] = icp_isalc_gcm_enc_192_update_sse,
 		[0][2] = icp_isalc_gcm_enc_256_update_sse,
-#ifdef CAN_USE_GCM_ASM_AVX2
-		[1][0] = icp_isalc_gcm_enc_128_update_avx2,
-		[1][1] = icp_isalc_gcm_enc_192_update_avx2,
-		[1][2] = icp_isalc_gcm_enc_256_update_avx2,
-#endif
+		/* TODO: add [1][0..2] for AVX2 ... */
 	},
 	.igo_dec_update = {
 		[0][0] = icp_isalc_gcm_dec_128_update_sse,
 		[0][1] = icp_isalc_gcm_dec_192_update_sse,
 		[0][2] = icp_isalc_gcm_dec_256_update_sse,
-#ifdef CAN_USE_GCM_ASM_AVX2
-		[1][0] = icp_isalc_gcm_dec_128_update_avx2,
-		[1][1] = icp_isalc_gcm_dec_192_update_avx2,
-		[1][2] = icp_isalc_gcm_dec_256_update_avx2,
-#endif
+		/* TODO: add [1][0..2] for AVX2 ... */
 	},
 	.igo_enc_finalize = {
 		[0][0] = icp_isalc_gcm_enc_128_finalize_sse,
 		[0][1] = icp_isalc_gcm_enc_192_finalize_sse,
 		[0][2] = icp_isalc_gcm_enc_256_finalize_sse,
-#ifdef CAN_USE_GCM_ASM_AVX2
-		[1][0] = icp_isalc_gcm_enc_128_finalize_avx2,
-		[1][1] = icp_isalc_gcm_enc_192_finalize_avx2,
-		[1][2] = icp_isalc_gcm_enc_256_finalize_avx2,
-#endif
+		/* TODO: add [1][0..2] for AVX2 ... */
 	},
 	.igo_dec_finalize = {
 		[0][0] = icp_isalc_gcm_dec_128_finalize_sse,
 		[0][1] = icp_isalc_gcm_dec_192_finalize_sse,
 		[0][2] = icp_isalc_gcm_dec_256_finalize_sse,
-#ifdef CAN_USE_GCM_ASM_AVX2
-		[1][0] = icp_isalc_gcm_dec_128_finalize_avx2,
-		[1][1] = icp_isalc_gcm_dec_192_finalize_avx2,
-		[1][2] = icp_isalc_gcm_dec_256_finalize_avx2,
-#endif
+		/* TODO: add [1][0..2] for AVX2 ... */
 	},
 	.igo_enc = {
 		[0][0] = icp_isalc_gcm_enc_128_sse,
 		[0][1] = icp_isalc_gcm_enc_192_sse,
 		[0][2] = icp_isalc_gcm_enc_256_sse,
-#ifdef CAN_USE_GCM_ASM_AVX2
-		[1][0] = icp_isalc_gcm_enc_128_avx2,
-		[1][1] = icp_isalc_gcm_enc_192_avx2,
-		[1][2] = icp_isalc_gcm_enc_256_avx2,
-#endif
+		/* TODO: add [1][0..2] for AVX2 ... */
 	},
 	.igo_dec = {
 		[0][0] = icp_isalc_gcm_dec_128_sse,
 		[0][1] = icp_isalc_gcm_dec_192_sse,
 		[0][2] = icp_isalc_gcm_dec_256_sse,
-#ifdef CAN_USE_GCM_ASM_AVX2
-		[1][0] = icp_isalc_gcm_dec_128_avx2,
-		[1][1] = icp_isalc_gcm_dec_192_avx2,
-		[1][2] = icp_isalc_gcm_dec_256_avx2,
-#endif
+		/* TODO: add [1][0..2] for AVX2 ... */
 	}
 };
 
@@ -357,9 +267,6 @@ get_isalc_gcm_keylen_index(const gcm_ctx_t *ctx)
 }
 
 static inline boolean_t gcm_sse_will_work(void);
-#ifdef CAN_USE_GCM_ASM_AVX2
-static inline boolean_t gcm_avx2_will_work(void);
-#endif
 
 #ifdef DEBUG_GCM_ASM
 /*
@@ -1216,7 +1123,7 @@ gcm_impl_init(void)
 	strlcpy(gcm_fastest_impl.name, "fastest", GCM_IMPL_NAME_MAX);
 
 #ifdef CAN_USE_GCM_ASM
-	/* Statically select the fastest SIMD implementation: (AVX2 > AVX > SSE). */
+	/* Statically select the fastest SIMD implementation: (AVX > SSE). */
 	/* TODO: Use a benchmark like other SIMD implementations do. */
 	gcm_simd_impl_t fastest_simd = GSI_NONE;
 
@@ -1239,13 +1146,6 @@ gcm_impl_init(void)
 	}
 #endif /* CAN_USE_GCM_ASM_AVX */
 
-#ifdef CAN_USE_GCM_ASM_AVX2
-	/* AVX2 is preferred over AVX when available */
-	if (gcm_avx2_will_work()) {
-		fastest_simd = GSI_ISALC_AVX2;
-	}
-#endif /* CAN_USE_GCM_ASM_AVX2 */
-
 	if (GCM_IMPL_READ(user_sel_impl) == IMPL_FASTEST) {
 		gcm_set_simd_impl(fastest_simd);
 	}
@@ -1264,9 +1164,6 @@ static const struct {
 		{ "fastest",	IMPL_FASTEST },
 #ifdef CAN_USE_GCM_ASM_AVX
 		{ "avx",	IMPL_AVX },
-#endif
-#ifdef CAN_USE_GCM_ASM_AVX2
-		{ "avx2",	IMPL_AVX2 },
 #endif
 #ifdef CAN_USE_GCM_ASM
 		{ "sse4_1",	IMPL_SSE4_1 },
@@ -1317,12 +1214,6 @@ gcm_impl_set(const char *val)
 			continue;
 		}
 #endif /* ifdef CAN_USE_GCM_ASM_AVX */
-#ifdef CAN_USE_GCM_ASM_AVX2
-		/* Ignore avx2 implementation if it won't work. */
-		if (gcm_impl_opts[i].sel == IMPL_AVX2 && !gcm_avx2_will_work()) {
-			continue;
-		}
-#endif /* ifdef CAN_USE_GCM_ASM_AVX2 */
 #endif /* ifdef CAN_USE_GCM_ASM */
 		if (strcmp(req_name, gcm_impl_opts[i].name) == 0) {
 			impl = gcm_impl_opts[i].sel;
@@ -1359,12 +1250,6 @@ gcm_impl_set(const char *val)
 		simd_impl = GSI_OSSL_AVX;
 	}
 #endif /* ifdef CAN_USE_GCM_ASM_AVX */
-#ifdef CAN_USE_GCM_ASM_AVX2
-	if (gcm_avx2_will_work() == B_TRUE &&
-	    (impl == IMPL_AVX2 || impl == IMPL_FASTEST)) {
-		simd_impl = GSI_ISALC_AVX2;
-	}
-#endif /* ifdef CAN_USE_GCM_ASM_AVX2 */
 	gcm_set_simd_impl(simd_impl);
 #endif /* ifdef CAN_USE_GCM_ASM */
 
@@ -1408,12 +1293,6 @@ icp_gcm_impl_get(char *buffer, zfs_kernel_param_t *kp)
 			continue;
 		}
 #endif /* ifdef CAN_USE_GCM_ASM_AVX */
-#ifdef CAN_USE_GCM_ASM_AVX2
-		/* Ignore avx2 implementation if it won't work. */
-		if (gcm_impl_opts[i].sel == IMPL_AVX2 && !gcm_avx2_will_work()) {
-			continue;
-		}
-#endif /* ifdef CAN_USE_GCM_ASM_AVX2 */
 #endif /* ifdef CAN_USE_GCM_ASM */
 		fmt = (impl == gcm_impl_opts[i].sel) ? "[%s] " : "%s ";
 		cnt += kmem_scnprintf(buffer + cnt, PAGE_SIZE - cnt, fmt,
@@ -1490,48 +1369,7 @@ gcm_cycle_simd_impl(void)
 {
 	int n_tries = 10;
 
-#ifdef CAN_USE_GCM_ASM_AVX2
-	/* AVX2 cycling with both AVX and SSE available */
-	if (gcm_avx2_will_work() == B_TRUE && gcm_avx_will_work() == B_TRUE) {
-		for (int i = 0; i < n_tries; ++i) {
-			if (atomic_cas_32(&GCM_SIMD_IMPL_READ,
-			    GSI_NONE, GSI_ISALC_SSE) == GSI_NONE)
-				return (GSI_ISALC_SSE);
-
-			if (atomic_cas_32(&GCM_SIMD_IMPL_READ,
-			    GSI_ISALC_SSE, GSI_OSSL_AVX) == GSI_ISALC_SSE)
-				return (GSI_OSSL_AVX);
-
-			if (atomic_cas_32(&GCM_SIMD_IMPL_READ,
-			    GSI_OSSL_AVX, GSI_ISALC_AVX2) == GSI_OSSL_AVX)
-				return (GSI_ISALC_AVX2);
-
-			if (atomic_cas_32(&GCM_SIMD_IMPL_READ,
-			    GSI_ISALC_AVX2, GSI_NONE) == GSI_ISALC_AVX2)
-				return (GSI_NONE);
-		}
-		/* We failed to cycle, return current value. */
-		return (GCM_SIMD_IMPL_READ);
-	}
-	/* AVX2 cycling with only SSE available (no AVX) */
-	else if (gcm_avx2_will_work() == B_TRUE && gcm_sse_will_work() == B_TRUE) {
-		for (int i = 0; i < n_tries; ++i) {
-			if (atomic_cas_32(&GCM_SIMD_IMPL_READ,
-			    GSI_NONE, GSI_ISALC_SSE) == GSI_NONE)
-				return (GSI_ISALC_SSE);
-
-			if (atomic_cas_32(&GCM_SIMD_IMPL_READ,
-			    GSI_ISALC_SSE, GSI_ISALC_AVX2) == GSI_ISALC_SSE)
-				return (GSI_ISALC_AVX2);
-
-			if (atomic_cas_32(&GCM_SIMD_IMPL_READ,
-			    GSI_ISALC_AVX2, GSI_NONE) == GSI_ISALC_AVX2)
-				return (GSI_NONE);
-		}
-		/* We failed to cycle, return current value. */
-		return (GCM_SIMD_IMPL_READ);
-	}
-#endif /* CAN_USE_GCM_ASM_AVX2 */
+	/* TODO: Add here vaes and avx2 with vaes beeing top most */
 
 #ifdef CAN_USE_GCM_ASM_AVX
 	if (gcm_avx_will_work() == B_TRUE) {
@@ -1654,17 +1492,6 @@ gcm_avx_will_work(void)
 	    zfs_avx_available() && zfs_aes_available() &&
 	    zfs_pclmulqdq_available());
 }
-
-#ifdef CAN_USE_GCM_ASM_AVX2
-static inline boolean_t
-gcm_avx2_will_work(void)
-{
-	/* AVX2 should imply aes-ni and pclmulqdq, but make sure anyhow. */
-	return (kfpu_allowed() &&
-	    zfs_avx2_available() && zfs_aes_available() &&
-	    zfs_pclmulqdq_available());
-}
-#endif
 
 /* Increment the GCM counter block by n. */
 static inline void
