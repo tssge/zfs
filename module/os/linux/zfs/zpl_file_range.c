@@ -134,6 +134,55 @@ zpl_copy_file_range(struct file *src_file, loff_t src_off,
 	return (ret);
 }
 
+/*
+ * Compare and deduplicate file ranges.
+ * 
+ * This function compares the content of two file ranges and if they are
+ * identical, arranges for them to be backed by the same storage blocks.
+ */
+static ssize_t
+zpl_dedupe_file_range_impl(struct file *src_file, loff_t src_off,
+    struct file *dst_file, loff_t dst_off, size_t len)
+{
+	struct inode *src_i = file_inode(src_file);
+	struct inode *dst_i = file_inode(dst_file);
+	uint64_t src_off_o = (uint64_t)src_off;
+	uint64_t dst_off_o = (uint64_t)dst_off;
+	uint64_t len_o = (uint64_t)len;
+	cred_t *cr = CRED();
+	fstrans_cookie_t cookie;
+	int err;
+
+	if (!zfs_bclone_enabled)
+		return (-EOPNOTSUPP);
+
+	if (!spa_feature_is_enabled(
+	    dmu_objset_spa(ITOZSB(dst_i)->z_os), SPA_FEATURE_BLOCK_CLONING))
+		return (-EOPNOTSUPP);
+
+	if (src_i != dst_i)
+		spl_inode_lock_shared(src_i);
+	spl_inode_lock(dst_i);
+
+	crhold(cr);
+	cookie = spl_fstrans_mark();
+
+	err = -zfs_dedupe_range(ITOZ(src_i), &src_off_o, ITOZ(dst_i),
+	    &dst_off_o, &len_o, cr);
+
+	spl_fstrans_unmark(cookie);
+	crfree(cr);
+
+	spl_inode_unlock(dst_i);
+	if (src_i != dst_i)
+		spl_inode_unlock_shared(src_i);
+
+	if (err < 0)
+		return (err);
+
+	return ((ssize_t)len_o);
+}
+
 #ifdef HAVE_VFS_REMAP_FILE_RANGE
 /*
  * Entry point for FICLONE/FICLONERANGE/FIDEDUPERANGE.
@@ -159,9 +208,15 @@ zpl_remap_file_range(struct file *src_file, loff_t src_off,
 	if (flags & ~(REMAP_FILE_DEDUP | REMAP_FILE_CAN_SHORTEN))
 		return (-EINVAL);
 
-	/* No support for dedup yet */
-	if (flags & REMAP_FILE_DEDUP)
-		return (-EOPNOTSUPP);
+	/* Handle deduplication */
+	if (flags & REMAP_FILE_DEDUP) {
+		/* For dedup, we need to compare the ranges first */
+		ssize_t ret = zpl_dedupe_file_range_impl(src_file, src_off,
+		    dst_file, dst_off, len);
+		if (!(flags & REMAP_FILE_CAN_SHORTEN) && ret >= 0 && ret != len)
+			ret = -EINVAL;
+		return (ret);
+	}
 
 	/* Zero length means to clone everything to the end of the file */
 	if (len == 0)
@@ -208,7 +263,17 @@ int
 zpl_dedupe_file_range(struct file *src_file, loff_t src_off,
     struct file *dst_file, loff_t dst_off, uint64_t len)
 {
-	/* No support for dedup yet */
-	return (-EOPNOTSUPP);
+	/* Zero length means to dedupe everything to the end of the file */
+	if (len == 0)
+		len = i_size_read(file_inode(src_file)) - src_off;
+
+	/* The entire length must be processed or this is an error. */
+	ssize_t ret = zpl_dedupe_file_range_impl(src_file, src_off,
+	    dst_file, dst_off, len);
+
+	if (ret >= 0 && ret != len)
+		ret = -EINVAL;
+
+	return (ret);
 }
 #endif /* HAVE_VFS_DEDUPE_FILE_RANGE */
