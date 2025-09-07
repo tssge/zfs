@@ -213,7 +213,12 @@ zpl_remap_file_range(struct file *src_file, loff_t src_off,
 		/* For dedup, we need to compare the ranges first */
 		ssize_t ret = zpl_dedupe_file_range_impl(src_file, src_off,
 		    dst_file, dst_off, len);
-		if (!(flags & REMAP_FILE_CAN_SHORTEN) && ret >= 0 && ret != len)
+		/* 
+		 * For FIDEDUPERANGE (REMAP_FILE_DEDUP), 0 bytes processed
+		 * is a valid result (content differs), not an error.
+		 * Only return -EINVAL for partial matches (0 < ret < len).
+		 */
+		if (!(flags & REMAP_FILE_CAN_SHORTEN) && ret > 0 && ret != len)
 			ret = -EINVAL;
 		return (ret);
 	}
@@ -267,12 +272,15 @@ zpl_dedupe_file_range(struct file *src_file, loff_t src_off,
 	if (len == 0)
 		len = i_size_read(file_inode(src_file)) - src_off;
 
-	/* The entire length must be processed or this is an error. */
+	/* 
+	 * For FIDEDUPERANGE, 0 bytes processed is a valid result 
+	 * (content differs), not an error.
+	 */
 	ssize_t ret = zpl_dedupe_file_range_impl(src_file, src_off,
 	    dst_file, dst_off, len);
 
-	if (ret >= 0 && ret != len)
-		ret = -EINVAL;
+	if (ret >= 0)
+		return (0); /* FIDEDUPERANGE always returns 0 on success */
 
 	return (ret);
 }
