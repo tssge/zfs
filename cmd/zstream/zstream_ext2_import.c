@@ -237,11 +237,11 @@ ext2_read_superblock(ext2_import_ctx_t *ctx)
 	} else {
 		ctx->inode_size = 128;  /* EXT2_GOOD_OLD_INODE_SIZE */
 	}
-	
+
 	ctx->inodes_per_group = ctx->sb.s_inodes_per_group;
 	ctx->blocks_per_group = ctx->sb.s_blocks_per_group;
-	ctx->group_count = (ctx->sb.s_blocks_count + ctx->blocks_per_group - 1) /
-	    ctx->blocks_per_group;
+	ctx->group_count = (ctx->sb.s_blocks_count +
+	    ctx->blocks_per_group - 1) / ctx->blocks_per_group;
 	ctx->next_object_id = 1;  /* Start object IDs from 1 */
 
 	if (ctx->verbose) {
@@ -468,8 +468,8 @@ process_ext2_filesystem(ext2_import_ctx_t *ctx)
 	}
 
 	/* Create root directory object in ZFS */
-	if (write_object_record(ctx, ctx->next_object_id++, DMU_OT_DIRECTORY_CONTENTS,
-	    SPA_OLD_MAXBLOCKSIZE) != 0) {
+	if (write_object_record(ctx, ctx->next_object_id++,
+	    DMU_OT_DIRECTORY_CONTENTS, SPA_OLD_MAXBLOCKSIZE) != 0) {
 		return (-1);
 	}
 
