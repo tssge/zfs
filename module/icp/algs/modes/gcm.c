@@ -49,6 +49,7 @@
 #if CAN_USE_GCM_ASM >= 2
 #define	IMPL_AVX2	(UINT32_MAX-3)
 #endif
+#define	IMPL_ISALC_SSE	(UINT32_MAX-4)
 #endif
 #define	GCM_IMPL_READ(i) (*(volatile uint32_t *) &(i))
 static uint32_t icp_gcm_impl = IMPL_FASTEST;
@@ -67,6 +68,7 @@ extern boolean_t ASMABI atomic_toggle_boolean_nv(volatile boolean_t *);
 
 static inline boolean_t gcm_avx_will_work(void);
 static inline boolean_t gcm_avx2_will_work(void);
+static inline boolean_t gcm_isalc_sse_will_work(void);
 static inline void gcm_use_impl(gcm_impl impl);
 static inline gcm_impl gcm_toggle_impl(void);
 
@@ -91,7 +93,7 @@ gcm_mode_encrypt_contiguous_blocks(gcm_ctx_t *ctx, char *data, size_t length,
     void (*xor_block)(uint8_t *, uint8_t *))
 {
 #ifdef CAN_USE_GCM_ASM
-	if (ctx->impl != GCM_IMPL_GENERIC)
+	if (ctx->impl != GCM_IMPL_GENERIC && ctx->impl != GCM_IMPL_ISALC_SSE)
 		return (gcm_mode_encrypt_contiguous_blocks_avx(
 		    ctx, data, length, out, block_size));
 #endif
@@ -210,7 +212,7 @@ gcm_encrypt_final(gcm_ctx_t *ctx, crypto_data_t *out, size_t block_size,
 {
 	(void) copy_block;
 #ifdef CAN_USE_GCM_ASM
-	if (ctx->impl != GCM_IMPL_GENERIC)
+	if (ctx->impl != GCM_IMPL_GENERIC && ctx->impl != GCM_IMPL_ISALC_SSE)
 		return (gcm_encrypt_final_avx(ctx, out, block_size));
 #endif
 
@@ -376,7 +378,7 @@ gcm_decrypt_final(gcm_ctx_t *ctx, crypto_data_t *out, size_t block_size,
     void (*xor_block)(uint8_t *, uint8_t *))
 {
 #ifdef CAN_USE_GCM_ASM
-	if (ctx->impl != GCM_IMPL_GENERIC)
+	if (ctx->impl != GCM_IMPL_GENERIC && ctx->impl != GCM_IMPL_ISALC_SSE)
 		return (gcm_decrypt_final_avx(ctx, out, block_size));
 #endif
 
@@ -679,7 +681,7 @@ gcm_init_ctx(gcm_ctx_t *gcm_ctx, char *param,
 	 * AVX implementations use Htable with sizes depending on
 	 * implementation.
 	 */
-	if (gcm_ctx->impl != GCM_IMPL_GENERIC) {
+	if (gcm_ctx->impl != GCM_IMPL_GENERIC && gcm_ctx->impl != GCM_IMPL_ISALC_SSE) {
 		rv = gcm_init_avx(gcm_ctx, iv, iv_len, aad, aad_len,
 		    block_size);
 	}
@@ -834,6 +836,10 @@ gcm_impl_init(void)
 		if (GCM_IMPL_READ(user_sel_impl) == IMPL_FASTEST) {
 			gcm_use_impl(GCM_IMPL_AVX);
 		}
+	} else if (gcm_isalc_sse_will_work()) {
+		if (GCM_IMPL_READ(user_sel_impl) == IMPL_FASTEST) {
+			gcm_use_impl(GCM_IMPL_ISALC_SSE);
+		}
 	}
 #endif
 	/* Finish initialization */
@@ -850,6 +856,7 @@ static const struct {
 #ifdef CAN_USE_GCM_ASM
 		{ "avx",	IMPL_AVX },
 		{ "avx2-vaes",	IMPL_AVX2 },
+		{ "isalc-sse",	IMPL_ISALC_SSE },
 #endif
 };
 
@@ -895,6 +902,9 @@ gcm_impl_set(const char *val)
 		if (gcm_impl_opts[i].sel == IMPL_AVX && !gcm_avx_will_work()) {
 			continue;
 		}
+		if (gcm_impl_opts[i].sel == IMPL_ISALC_SSE && !gcm_isalc_sse_will_work()) {
+			continue;
+		}
 #endif
 		if (strcmp(req_name, gcm_impl_opts[i].name) == 0) {
 			impl = gcm_impl_opts[i].sel;
@@ -928,6 +938,9 @@ gcm_impl_set(const char *val)
 	if (gcm_avx_will_work() == B_TRUE &&
 	    (impl == IMPL_AVX || impl == IMPL_FASTEST)) {
 		gcm_use_impl(GCM_IMPL_AVX);
+	} else if (gcm_isalc_sse_will_work() == B_TRUE &&
+	    (impl == IMPL_ISALC_SSE || impl == IMPL_FASTEST)) {
+		gcm_use_impl(GCM_IMPL_ISALC_SSE);
 	} else {
 		gcm_use_impl(GCM_IMPL_GENERIC);
 	}
@@ -969,6 +982,9 @@ icp_gcm_impl_get(char *buffer, zfs_kernel_param_t *kp)
 		}
 #endif
 		if (gcm_impl_opts[i].sel == IMPL_AVX && !gcm_avx_will_work()) {
+			continue;
+		}
+		if (gcm_impl_opts[i].sel == IMPL_ISALC_SSE && !gcm_isalc_sse_will_work()) {
 			continue;
 		}
 #endif
@@ -1104,6 +1120,15 @@ gcm_avx_will_work(void)
 	    zfs_pclmulqdq_available());
 }
 
+static inline boolean_t
+gcm_isalc_sse_will_work(void)
+{
+	/* SSE4.1 should imply aes-ni and pclmulqdq, but make sure anyhow. */
+	return (kfpu_allowed() &&
+	    zfs_sse41_available() && zfs_aes_available() &&
+	    zfs_pclmulqdq_available());
+}
+
 static inline void
 gcm_use_impl(gcm_impl impl)
 {
@@ -1126,6 +1151,14 @@ gcm_use_impl(gcm_impl impl)
 
 			zfs_fallthrough;
 
+		case GCM_IMPL_ISALC_SSE:
+			if (gcm_isalc_sse_will_work() == B_TRUE) {
+				atomic_swap_32(&gcm_impl_used, impl);
+				return;
+			}
+
+			zfs_fallthrough;
+
 		default:
 			atomic_swap_32(&gcm_impl_used, GCM_IMPL_GENERIC);
 	}
@@ -1142,6 +1175,9 @@ gcm_impl_will_work(gcm_impl impl)
 
 		case GCM_IMPL_AVX:
 			return (gcm_avx_will_work());
+
+		case GCM_IMPL_ISALC_SSE:
+			return (gcm_isalc_sse_will_work());
 
 		default:
 			return (B_TRUE);
