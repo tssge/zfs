@@ -212,14 +212,17 @@ process_gzip_file(const char *filename, const char *dataset_name, int outfd)
 
 	/* Read and validate gzip header */
 	if (fread(&header, sizeof (header), 1, infile) != 1) {
+		fclose(infile);
 		err(1, "cannot read gzip header from %s", filename);
 	}
 
 	if (header.magic1 != GZIP_MAGIC1 || header.magic2 != GZIP_MAGIC2) {
+		fclose(infile);
 		err(1, "%s is not a valid gzip file", filename);
 	}
 
 	if (header.method != GZIP_METHOD_DEFLATE) {
+		fclose(infile);
 		err(1, "%s uses unsupported compression method", filename);
 	}
 
@@ -228,10 +231,13 @@ process_gzip_file(const char *filename, const char *dataset_name, int outfd)
 	
 	gzip_data = malloc(file_size);
 	if (gzip_data == NULL) {
+		fclose(infile);
 		err(1, "cannot allocate memory for gzip data");
 	}
 
 	if (fread(gzip_data, file_size, 1, infile) != 1) {
+		free(gzip_data);
+		fclose(infile);
 		err(1, "cannot read gzip file %s", filename);
 	}
 	fclose(infile);
