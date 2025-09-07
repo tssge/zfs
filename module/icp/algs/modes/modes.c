@@ -177,12 +177,6 @@ gcm_clear_ctx(gcm_ctx_t *ctx)
 		explicit_memset(ctx->gcm_Htable, 0, ctx->gcm_htab_len);
 		kmem_free(ctx->gcm_Htable, ctx->gcm_htab_len);
 	}
-	/* Clean up shadow context if it exists */
-	if (ctx->gcm_shadow_ctx != NULL) {
-		gcm_clear_ctx(ctx->gcm_shadow_ctx);
-		kmem_free(ctx->gcm_shadow_ctx, sizeof (gcm_ctx_t));
-		ctx->gcm_shadow_ctx = NULL;
-	}
 #endif
 	if (ctx->gcm_pt_buf != NULL) {
 		explicit_memset(ctx->gcm_pt_buf, 0, ctx->gcm_pt_buf_len);
