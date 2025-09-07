@@ -42,6 +42,7 @@
 #include <sys/dmu.h>
 #include <sys/zfs_ioctl.h>
 #include <sys/zio.h>
+#include <sys/fs/zfs.h>
 #include <zfs_fletcher.h>
 
 #include "zstream.h"
@@ -55,11 +56,22 @@
 #define	EXT2_BLOCK_SIZE_BASE	1024
 #define	EXT2_MIN_BLOCK_SIZE	1024
 #define	EXT2_MAX_BLOCK_SIZE	4096
+#define	EXT2_ROOT_INODE		2
 
 /* Inode types */
 #define	EXT2_S_IFREG	0x8000	/* Regular file */
 #define	EXT2_S_IFDIR	0x4000	/* Directory */
 #define	EXT2_S_IFLNK	0xA000	/* Symbolic link */
+
+/* File type constants for directory entries */
+#define	EXT2_FT_UNKNOWN		0
+#define	EXT2_FT_REG_FILE	1
+#define	EXT2_FT_DIR		2
+#define	EXT2_FT_CHRDEV		3
+#define	EXT2_FT_BLKDEV		4
+#define	EXT2_FT_FIFO		5
+#define	EXT2_FT_SOCK		6
+#define	EXT2_FT_SYMLINK		7
 
 /* Directory entry structure */
 typedef struct ext2_dir_entry {
@@ -132,6 +144,18 @@ typedef struct ext2_inode {
 	uint8_t i_osd2[12];
 } __attribute__((packed)) ext2_inode_t;
 
+/* Block group descriptor */
+typedef struct ext2_group_desc {
+	uint32_t bg_block_bitmap;
+	uint32_t bg_inode_bitmap;
+	uint32_t bg_inode_table;
+	uint16_t bg_free_blocks_count;
+	uint16_t bg_free_inodes_count;
+	uint16_t bg_used_dirs_count;
+	uint16_t bg_pad;
+	uint32_t bg_reserved[3];
+} __attribute__((packed)) ext2_group_desc_t;
+
 /* Context structure for ext2 import */
 typedef struct ext2_import_ctx {
 	int fd;				/* File descriptor for ext2 image */
@@ -140,7 +164,10 @@ typedef struct ext2_import_ctx {
 	uint32_t inode_size;		/* Inode size in bytes */
 	uint32_t inodes_per_group;	/* Inodes per block group */
 	uint32_t blocks_per_group;	/* Blocks per block group */
+	uint32_t group_count;		/* Number of block groups */
+	ext2_group_desc_t *group_desc;	/* Block group descriptors */
 	uint64_t total_size;		/* Total size of stream */
+	uint64_t next_object_id;	/* Next object ID for ZFS objects */
 	boolean_t verbose;		/* Verbose output */
 	char *dataset_name;		/* Target dataset name */
 } ext2_import_ctx_t;
@@ -185,6 +212,8 @@ ext2_read_superblock(ext2_import_ctx_t *ctx)
 	ctx->sb.s_blocks_count = le32toh(ctx->sb.s_blocks_count);
 	ctx->sb.s_inodes_per_group = le32toh(ctx->sb.s_inodes_per_group);
 	ctx->sb.s_blocks_per_group = le32toh(ctx->sb.s_blocks_per_group);
+	ctx->sb.s_rev_level = le32toh(ctx->sb.s_rev_level);
+	ctx->sb.s_inode_size = le16toh(ctx->sb.s_inode_size);
 
 	/* Validate magic number */
 	if (ctx->sb.s_magic != EXT2_SUPER_MAGIC) {
@@ -202,17 +231,151 @@ ext2_read_superblock(ext2_import_ctx_t *ctx)
 	}
 
 	/* Set other derived values */
-	ctx->inode_size = sizeof (ext2_inode_t);  /* Basic size for now */
+	/* Use inode size from superblock if available, otherwise use default */
+	if (ctx->sb.s_rev_level >= 1) {
+		ctx->inode_size = le16toh(ctx->sb.s_inode_size);
+	} else {
+		ctx->inode_size = 128;  /* EXT2_GOOD_OLD_INODE_SIZE */
+	}
+	
 	ctx->inodes_per_group = ctx->sb.s_inodes_per_group;
 	ctx->blocks_per_group = ctx->sb.s_blocks_per_group;
+	ctx->group_count = (ctx->sb.s_blocks_count + ctx->blocks_per_group - 1) /
+	    ctx->blocks_per_group;
+	ctx->next_object_id = 1;  /* Start object IDs from 1 */
 
 	if (ctx->verbose) {
 		printf("EXT2 Filesystem Information:\n");
 		printf("  Block size: %u bytes\n", ctx->block_size);
+		printf("  Inode size: %u bytes\n", ctx->inode_size);
 		printf("  Total inodes: %u\n", ctx->sb.s_inodes_count);
 		printf("  Total blocks: %u\n", ctx->sb.s_blocks_count);
 		printf("  Inodes per group: %u\n", ctx->inodes_per_group);
 		printf("  Blocks per group: %u\n", ctx->blocks_per_group);
+		printf("  Block groups: %u\n", ctx->group_count);
+		printf("  Revision level: %u\n", ctx->sb.s_rev_level);
+	}
+
+	return (0);
+}
+
+/*
+ * Read block group descriptors
+ */
+static int
+ext2_read_group_descriptors(ext2_import_ctx_t *ctx)
+{
+	size_t desc_size = sizeof (ext2_group_desc_t) * ctx->group_count;
+	off_t desc_offset;
+
+	/* Group descriptors start in the block after the superblock */
+	if (ctx->block_size == 1024) {
+		desc_offset = 2048;  /* Skip boot block and superblock */
+	} else {
+		desc_offset = ctx->block_size;  /* Skip superblock */
+	}
+
+	if (ctx->verbose) {
+		printf("Reading %u group descriptors from offset %ld\n",
+		    ctx->group_count, desc_offset);
+	}
+
+	ctx->group_desc = safe_malloc(desc_size);
+	if (ext2_read_data(ctx, desc_offset, ctx->group_desc, desc_size) != 0) {
+		free(ctx->group_desc);
+		ctx->group_desc = NULL;
+		return (-1);
+	}
+
+	/* Convert from little endian if needed */
+	for (uint32_t i = 0; i < ctx->group_count; i++) {
+		ctx->group_desc[i].bg_block_bitmap =
+		    le32toh(ctx->group_desc[i].bg_block_bitmap);
+		ctx->group_desc[i].bg_inode_bitmap =
+		    le32toh(ctx->group_desc[i].bg_inode_bitmap);
+		ctx->group_desc[i].bg_inode_table =
+		    le32toh(ctx->group_desc[i].bg_inode_table);
+
+		if (ctx->verbose) {
+			printf("Group %u: inode_table at block %u\n",
+			    i, ctx->group_desc[i].bg_inode_table);
+		}
+	}
+
+	return (0);
+}
+
+/*
+ * Read an inode from the filesystem
+ */
+static int
+ext2_read_inode(ext2_import_ctx_t *ctx, uint32_t inode_num, ext2_inode_t *inode)
+{
+	uint32_t group = (inode_num - 1) / ctx->inodes_per_group;
+	uint32_t index = (inode_num - 1) % ctx->inodes_per_group;
+	off_t inode_offset;
+
+	if (group >= ctx->group_count) {
+		fprintf(stderr, "Invalid inode number: %u\n", inode_num);
+		return (-1);
+	}
+
+	inode_offset = (off_t)ctx->group_desc[group].bg_inode_table *
+	    ctx->block_size + index * ctx->inode_size;
+
+	if (ctx->verbose) {
+		printf("Reading inode %u: group=%u, index=%u, offset=%ld\n",
+		    inode_num, group, index, inode_offset);
+	}
+
+	if (ext2_read_data(ctx, inode_offset, inode, sizeof (*inode)) != 0) {
+		return (-1);
+	}
+
+	/* Convert from little endian */
+	inode->i_mode = le16toh(inode->i_mode);
+	inode->i_uid = le16toh(inode->i_uid);
+	inode->i_size = le32toh(inode->i_size);
+	inode->i_atime = le32toh(inode->i_atime);
+	inode->i_ctime = le32toh(inode->i_ctime);
+	inode->i_mtime = le32toh(inode->i_mtime);
+	inode->i_gid = le16toh(inode->i_gid);
+	inode->i_links_count = le16toh(inode->i_links_count);
+	inode->i_blocks = le32toh(inode->i_blocks);
+
+	for (int i = 0; i < 15; i++) {
+		inode->i_block[i] = le32toh(inode->i_block[i]);
+	}
+
+	return (0);
+}
+
+/*
+ * Write a ZFS object record
+ */
+static int
+write_object_record(ext2_import_ctx_t *ctx, uint64_t object_id,
+    dmu_object_type_t obj_type, uint32_t blksz)
+{
+	dmu_replay_record_t drr = { 0 };
+	struct drr_object *drro = &drr.drr_u.drr_object;
+
+	drr.drr_type = DRR_OBJECT;
+	drr.drr_payloadlen = 0;
+
+	drro->drr_object = object_id;
+	drro->drr_type = obj_type;
+	drro->drr_bonustype = DMU_OT_SA;
+	drro->drr_blksz = blksz;
+	drro->drr_bonuslen = 0;
+	drro->drr_checksumtype = ZIO_CHECKSUM_INHERIT;
+	drro->drr_compress = ZIO_COMPRESS_INHERIT;
+	drro->drr_toguid = 0;
+
+	/* Write the record */
+	if (fwrite(&drr, sizeof (drr), 1, stdout) != 1) {
+		fprintf(stderr, "Failed to write object record\n");
+		return (-1);
 	}
 
 	return (0);
@@ -271,13 +434,19 @@ write_stream_end(ext2_import_ctx_t *ctx)
 
 /*
  * Process the ext2 filesystem and generate ZFS stream
- * This is a minimal implementation that creates an empty dataset
  */
 static int
 process_ext2_filesystem(ext2_import_ctx_t *ctx)
 {
+	ext2_inode_t root_inode;
+
 	if (ctx->verbose) {
 		printf("Processing ext2 filesystem...\n");
+	}
+
+	/* Read block group descriptors */
+	if (ext2_read_group_descriptors(ctx) != 0) {
+		return (-1);
 	}
 
 	/* Write stream header */
@@ -285,14 +454,28 @@ process_ext2_filesystem(ext2_import_ctx_t *ctx)
 		return (-1);
 	}
 
-	/*
-	 * TODO: Implement actual filesystem traversal
-	 * This would involve:
-	 * 1. Reading inode table
-	 * 2. Traversing directory structure starting from root inode
-	 * 3. Creating appropriate DRR_OBJECT records for each file/directory
-	 * 4. Creating DRR_WRITE records for file data
-	 */
+	/* Read the root directory inode */
+	if (ext2_read_inode(ctx, EXT2_ROOT_INODE, &root_inode) != 0) {
+		fprintf(stderr, "Failed to read root directory inode\n");
+		return (-1);
+	}
+
+	if (ctx->verbose) {
+		printf("Root directory inode:\n");
+		printf("  Mode: 0%o\n", root_inode.i_mode);
+		printf("  Size: %u bytes\n", root_inode.i_size);
+		printf("  Links: %u\n", root_inode.i_links_count);
+	}
+
+	/* Create root directory object in ZFS */
+	if (write_object_record(ctx, ctx->next_object_id++, DMU_OT_DIRECTORY_CONTENTS,
+	    SPA_OLD_MAXBLOCKSIZE) != 0) {
+		return (-1);
+	}
+
+	if (ctx->verbose) {
+		printf("Created ZFS directory object for root\n");
+	}
 
 	/* Write stream trailer */
 	if (write_stream_end(ctx) != 0) {
@@ -365,6 +548,10 @@ zstream_do_ext2_import(int argc, char *argv[])
 	/* Process the filesystem and generate stream */
 	int ret = process_ext2_filesystem(&ctx);
 
+	/* Cleanup */
+	if (ctx.group_desc != NULL) {
+		free(ctx.group_desc);
+	}
 	close(ctx.fd);
 	return (ret);
 }
