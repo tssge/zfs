@@ -58,6 +58,11 @@ static uint32_t user_sel_impl = IMPL_FASTEST;
 #ifdef CAN_USE_GCM_ASM
 /* Does the architecture we run on support the MOVBE instruction? */
 boolean_t gcm_avx_can_use_movbe = B_FALSE;
+/*
+ * Whether to use the optimized openssl gcm and ghash implementations.
+ */
+static gcm_impl gcm_impl_used = GCM_IMPL_GENERIC;
+#define	GCM_IMPL_USED	(*(volatile gcm_impl *)&gcm_impl_used)
 
 extern boolean_t ASMABI atomic_toggle_boolean_nv(volatile boolean_t *);
 
@@ -215,6 +220,8 @@ get_isalc_gcm_keylen_index(const gcm_ctx_t *ctx)
 static inline boolean_t gcm_avx_will_work(void);
 static inline boolean_t gcm_avx2_will_work(void);
 static inline boolean_t gcm_isalc_sse_will_work(void);
+static inline void gcm_use_impl(gcm_impl impl);
+static inline gcm_impl gcm_toggle_impl(void);
 
 static int gcm_mode_encrypt_contiguous_blocks_avx(gcm_ctx_t *, char *, size_t,
     crypto_data_t *, size_t);
@@ -835,10 +842,12 @@ gcm_init_ctx(gcm_ctx_t *gcm_ctx, char *param,
 	}
 
 	/*
-	 * AVX implementations use Htable with sizes depending on
+	 * AVX and ISALC implementations use Htable with sizes depending on
 	 * implementation.
 	 */
-	if (gcm_ctx->impl != GCM_IMPL_GENERIC && gcm_ctx->impl != GCM_IMPL_ISALC_SSE) {
+	if (gcm_ctx->impl == GCM_IMPL_ISALC_SSE) {
+		gcm_init_isalc(gcm_ctx, iv, iv_len, aad, aad_len);
+	} else if (gcm_ctx->impl != GCM_IMPL_GENERIC) {
 		rv = gcm_init_avx(gcm_ctx, iv, iv_len, aad, aad_len,
 		    block_size);
 	}
