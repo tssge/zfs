@@ -365,6 +365,11 @@ gcm_mode_encrypt_contiguous_blocks(gcm_ctx_t *ctx, char *data, size_t length,
 		return (gcm_mode_encrypt_contiguous_blocks_avx(
 		    ctx, (const uint8_t *)data, length, out, block_size));
 #endif
+#if CAN_USE_GCM_ASM >= 2
+	if (ctx->gcm_simd_impl == GSI_AVX2)
+		return (gcm_mode_encrypt_contiguous_blocks_avx(
+		    ctx, (const uint8_t *)data, length, out, block_size));
+#endif
 
 	ASSERT3S(ctx->gcm_simd_impl, ==, GSI_NONE);
 #endif /* ifdef CAN_USE_GCM_ASM */
@@ -489,6 +494,10 @@ gcm_encrypt_final(gcm_ctx_t *ctx, crypto_data_t *out, size_t block_size,
 
 #ifdef CAN_USE_GCM_ASM_AVX
 	if (ctx->gcm_simd_impl == GSI_OSSL_AVX)
+		return (gcm_encrypt_final_avx(ctx, out, block_size));
+#endif
+#if CAN_USE_GCM_ASM >= 2
+	if (ctx->gcm_simd_impl == GSI_AVX2)
 		return (gcm_encrypt_final_avx(ctx, out, block_size));
 #endif
 
@@ -661,6 +670,10 @@ gcm_decrypt_final(gcm_ctx_t *ctx, crypto_data_t *out, size_t block_size,
 
 #ifdef CAN_USE_GCM_ASM_AVX
 	if (ctx->gcm_simd_impl == GSI_OSSL_AVX)
+		return (gcm_decrypt_final_avx(ctx, out, block_size));
+#endif
+#if CAN_USE_GCM_ASM >= 2
+	if (ctx->gcm_simd_impl == GSI_AVX2)
 		return (gcm_decrypt_final_avx(ctx, out, block_size));
 #endif
 
@@ -1017,6 +1030,11 @@ gcm_init_ctx(gcm_ctx_t *gcm_ctx, char *param,
 		gcm_init_avx(gcm_ctx, iv, iv_len, aad, aad_len, block_size);
 	}
 #endif /* ifdef CAN_USE_GCM_ASM_AVX */
+#if CAN_USE_GCM_ASM >= 2
+	if (gcm_ctx->gcm_simd_impl == GSI_AVX2) {
+		gcm_init_avx(gcm_ctx, iv, iv_len, aad, aad_len, block_size);
+	}
+#endif
 #endif /* ifdef CAN_USE_GCM_ASM */
 
 	return (rv);
@@ -1383,6 +1401,9 @@ gcm_simd_get_htab_size(gcm_simd_impl_t simd_mode)
 		break;
 	case GSI_ISALC_SSE:
 		return (2 * 8 * 2 * sizeof (uint64_t));
+		break;
+	case GSI_AVX2:
+		return (2 * 8 * sizeof (uint128_t));
 		break;
 	default:
 #ifdef _KERNEL
