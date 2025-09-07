@@ -2321,7 +2321,7 @@ dbuf_dirty(dmu_buf_impl_t *db, dmu_tx_t *tx)
 	ASSERT(db->db.db_size != 0);
 
 	dprintf_dbuf(db, "size=%llx txg=%llu\n", (u_longlong_t)db->db.db_size,
-	    	(u_longlong_t)dmu_tx_get_txg(tx));
+	    (u_longlong_t)dmu_tx_get_txg(tx));
 
 	if (db->db_blkid != DMU_BONUS_BLKID && db->db_state != DB_NOFILL)
 		dmu_objset_willuse_space(os, db->db.db_size, tx);

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: CDDL-1.0
 /*
  * This file and its contents are supplied under the terms of the
  * Common Development and Distribution License ("CDDL"), version 1.0.
@@ -502,7 +503,8 @@ fiemap_verify_device(fiemap_args_t *fa)
 static int
 fiemap_verify_size(fiemap_args_t *fa)
 {
-	zfs_range_tree_t *rt = zfs_range_tree_create(NULL, ZFS_RANGE_SEG64, NULL, 0, 0);
+	zfs_range_tree_t *rt = zfs_range_tree_create(NULL, ZFS_RANGE_SEG64,
+	    NULL, 0, 0);
 	int error = 0;
 
 	for (int i = 0; i < fa->fa_fiemap->fm_mapped_extents; i++) {

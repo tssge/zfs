@@ -50,6 +50,7 @@ scripts_zfs_tests_bin_PROGRAMS += %D%/draid
 %C%_draid_LDADD += $(ZLIB_LIBS)
 
 scripts_zfs_tests_bin_PROGRAMS += %D%/fiemap
+%C%_fiemap_CPPFLAGS = $(AM_CPPFLAGS) $(LIBZPOOL_CPPFLAGS)
 %C%_fiemap_CFLAGS = $(AM_CFLAGS) $(ZLIB_CFLAGS)
 %C%_fiemap_LDADD = \
 	libavl.la \
@@ -65,6 +66,7 @@ scripts_zfs_tests_bin_PROGRAMS += %D%/file_append %D%/file_check %D%/file_trunc 
 %C%_randwritecomp_SOURCES = %D%/file/randwritecomp.c
 
 scripts_zfs_tests_bin_PROGRAMS += %D%/getholes
+%C%_getholes_CPPFLAGS = $(AM_CPPFLAGS) $(LIBZFS_CPPFLAGS)
 %C%_getholes_LDADD = \
 	libzfs.la \
 	libspl.la
@@ -142,6 +144,7 @@ scripts_zfs_tests_bin_PROGRAMS += %D%/zed_fd_spill-zedlet
 scripts_zfs_tests_bin_PROGRAMS += %D%/idmap_util
 scripts_zfs_tests_bin_PROGRAMS += %D%/mkholes
 
+%C%_mkholes_CPPFLAGS = $(AM_CPPFLAGS) $(LIBSPL_CPPFLAGS)
 %C%_mkholes_LDADD = libspl.la
 %C%_idmap_util_LDADD = libspl.la
 
