@@ -662,7 +662,7 @@ gcm_init_ctx(gcm_ctx_t *gcm_ctx, char *param,
 	 * still they could be created by the aes generic implementation.
 	 * Make sure not to use them since we'll corrupt data if we do.
 	 */
-	if (gcm_ctx->impl != GCM_IMPL_GENERIC && needs_bswap == B_TRUE) {
+	if (gcm_ctx->impl != GCM_IMPL_GENERIC && gcm_ctx->impl != GCM_IMPL_ISALC_SSE && needs_bswap == B_TRUE) {
 		gcm_ctx->impl = GCM_IMPL_GENERIC;
 
 		cmn_err_once(CE_WARN,
@@ -1126,7 +1126,7 @@ gcm_isalc_sse_will_work(void)
 {
 	/* SSE4.1 should imply aes-ni and pclmulqdq, but make sure anyhow. */
 	return (kfpu_allowed() &&
-	    zfs_sse41_available() && zfs_aes_available() &&
+	    zfs_sse4_1_available() && zfs_aes_available() &&
 	    zfs_pclmulqdq_available());
 }
 
