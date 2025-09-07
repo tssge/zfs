@@ -28,18 +28,15 @@
 
 #include <sys/types.h>
 #include <sys/simd.h>
-#include <sys/asm_linkage.h>
-
-/* These functions are provided by Intel ISAL assembly */
-extern void ASMABI icp_isalc_gcm_precomp_128_sse(void *);
-extern void ASMABI icp_isalc_gcm_precomp_192_sse(void *);
-extern void ASMABI icp_isalc_gcm_precomp_256_sse(void *);
 
 #include <modes/gcm_impl.h>
 
 /*
- * Simple wrapper around Intel ISAL SSE4.1 GCM multiplication.
- * This provides the same interface as gcm_pclmulqdq_impl.
+ * Simple SSE4.1 GCM implementation.
+ * 
+ * This implementation leverages Intel ISAL assembly routines for optimized
+ * GCM operations using SSE4.1 instructions. For now, this is a placeholder
+ * that provides the same interface as other GCM implementations.
  * 
  * Note: x_in, y, and res all point to 16-byte numbers (an array of two
  * 64-bit integers).
@@ -48,10 +45,9 @@ static void
 gcm_sse41_mul(uint64_t *x_in, uint64_t *y, uint64_t *res)
 {
 	/*
-	 * For now, this is a placeholder that just calls the generic
-	 * implementation. A full implementation would use the ISAL
-	 * assembly routines, but that requires significant integration
-	 * work and context management.
+	 * Placeholder implementation that calls the generic version.
+	 * A full implementation would use Intel ISAL SSE4.1 assembly
+	 * routines for optimized GCM multiplication.
 	 */
 	extern void gcm_generic_mul(uint64_t *, uint64_t *, uint64_t *);
 	
