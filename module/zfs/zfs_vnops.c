@@ -2198,18 +2198,22 @@ zfs_dedupe_range(znode_t *inzp, uint64_t *inoffp, znode_t *outzp,
 		zn_flush_cached_data(outzp, B_TRUE);
 
 	/*
-	 * For efficient block-level deduplication, we should align to block
-	 * boundaries. However, we still allow unaligned comparisons.
+	 * For efficient block-level deduplication, we need to align to block
+	 * boundaries since zfs_clone_range() requires strict alignment.
+	 * We use the smaller block size to ensure compatibility.
 	 */
 	blksz = MIN(inzp->z_blksz, outzp->z_blksz);
+	
 	/*
-	 * For very small ranges, block alignment might not be beneficial.
-	 * For larger ranges, try to encourage block-aligned operations.
+	 * Check if ranges are block-aligned. If not, we need to handle
+	 * this by either failing or adjusting the ranges.
 	 */
-	if (len >= blksz && ((inoff % blksz) != 0 || (outoff % blksz) != 0)) {
+	if ((inoff % blksz) != 0 || (outoff % blksz) != 0) {
 		/*
-		 * Ranges are not block-aligned. We can still compare them
-		 * but deduplication might be less efficient.
+		 * For unaligned ranges, we can still compare the data but
+		 * we need to be careful about the deduplication step.
+		 * We'll compare the data and if it matches, we'll need to
+		 * align the ranges for the clone operation.
 		 */
 	}
 
@@ -2330,18 +2334,79 @@ zfs_dedupe_range(znode_t *inzp, uint64_t *inoffp, znode_t *outzp,
 		 * Data matches! Now we can deduplicate by cloning.
 		 * Since the data is identical, we can safely use clone_range
 		 * to deduplicate the blocks.
+		 * 
+		 * However, zfs_clone_range requires block-aligned ranges.
+		 * If our ranges aren't aligned, we need to align them.
 		 */
 		uint64_t clone_inoff = inoff;
 		uint64_t clone_outoff = outoff;
 		uint64_t clone_len = len;
+		
+		/*
+		 * Check if we need to align the ranges for block cloning.
+		 * If the ranges aren't block-aligned, we need to align them
+		 * to block boundaries, which may reduce the effective length.
+		 */
+		if ((inoff % blksz) != 0 || (outoff % blksz) != 0) {
+			/*
+			 * Align the start offsets to block boundaries.
+			 * This may reduce the effective range we can deduplicate.
+			 */
+			uint64_t aligned_inoff = P2ROUNDUP(inoff, blksz);
+			uint64_t aligned_outoff = P2ROUNDUP(outoff, blksz);
+			
+			/*
+			 * If alignment would move us beyond the end of the range,
+			 * we can't perform block-level deduplication.
+			 */
+			if (aligned_inoff >= inoff + len || aligned_outoff >= outoff + len) {
+				/*
+				 * The range is too small to align to block boundaries.
+				 * We can't perform block-level deduplication.
+				 */
+				*lenp = 0;
+				error = 0; /* Not an error, just no deduplication possible */
+			} else {
+				/*
+				 * Adjust the range to be block-aligned.
+				 * We need to verify that the aligned portion still matches.
+				 */
+				clone_inoff = aligned_inoff;
+				clone_outoff = aligned_outoff;
+				clone_len = P2ALIGN(inoff + len - aligned_inoff, blksz);
+				
+				/*
+				 * Ensure we don't exceed the original range bounds.
+				 */
+				if (clone_inoff + clone_len > inoff + len) {
+					clone_len = (inoff + len) - clone_inoff;
+				}
+				if (clone_outoff + clone_len > outoff + len) {
+					clone_len = (outoff + len) - clone_outoff;
+				}
+				
+				/*
+				 * If the aligned range is too small, skip deduplication.
+				 */
+				if (clone_len < blksz) {
+					*lenp = 0;
+					error = 0;
+				}
+			}
+		}
+		
+		/*
+		 * Only attempt cloning if we have a valid aligned range.
+		 */
+		if (error == 0 && *lenp > 0 && clone_len >= blksz) {
+			error = zfs_clone_range(inzp, &clone_inoff, outzp,
+			    &clone_outoff, &clone_len, cr);
 
-		error = zfs_clone_range(inzp, &clone_inoff, outzp,
-		    &clone_outoff, &clone_len, cr);
-
-		if (error == 0) {
-			*inoffp = clone_inoff;
-			*outoffp = clone_outoff;
-			*lenp = clone_len;
+			if (error == 0) {
+				*inoffp = clone_inoff;
+				*outoffp = clone_outoff;
+				*lenp = clone_len;
+			}
 		}
 
 		zfs_rangelock_exit(outlr);
