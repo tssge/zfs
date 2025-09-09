@@ -273,15 +273,19 @@ zpl_dedupe_file_range(struct file *src_file, loff_t src_off,
 		len = i_size_read(file_inode(src_file)) - src_off;
 
 	/*
-	 * For FIDEDUPERANGE, 0 bytes processed is a valid result
-	 * (content differs), not an error.
+	 * For FIDEDUPERANGE, we return the number of bytes actually
+	 * deduplicated. The kernel will set the appropriate status
+	 * field based on this return value.
 	 */
 	ssize_t ret = zpl_dedupe_file_range_impl(src_file, src_off,
 	    dst_file, dst_off, len);
 
-	if (ret >= 0)
-		return (0); /* FIDEDUPERANGE always returns 0 on success */
-
+	/*
+	 * Return the actual number of bytes deduplicated.
+	 * The kernel will handle setting the status field appropriately:
+	 * - If ret > 0: status = FILE_DEDUPE_RANGE_SAME
+	 * - If ret == 0: status = FILE_DEDUPE_RANGE_DIFFERS
+	 */
 	return (ret);
 }
 #endif /* HAVE_VFS_DEDUPE_FILE_RANGE */
