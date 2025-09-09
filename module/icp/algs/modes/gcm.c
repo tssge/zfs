@@ -57,6 +57,21 @@
 static uint32_t icp_gcm_impl = IMPL_FASTEST;
 static uint32_t user_sel_impl = IMPL_FASTEST;
 
+#ifdef CAN_USE_GCM_ASM_SSE
+/* Intel ISAL chunk size constants */
+#define	GCM_ISALC_MIN_CHUNK_SIZE 1024		/* 64 16 byte blocks */
+#define	GCM_ISALC_MAX_CHUNK_SIZE (1024*1024)	/* 1MB */
+#define	GCM_ISALC_CHUNK_SIZE_READ (*(volatile uint32_t *) &gcm_isalc_chunk_size)
+
+/*
+ * Module parameter: number of bytes to process at once while owning the FPU.
+ * Rounded down to the next multiple of 512 bytes and ensured to be greater
+ * or equal to GCM_ISALC_MIN_CHUNK_SIZE and less or equal to
+ * GCM_ISALC_MAX_CHUNK_SIZE. It defaults to 32 kiB.
+ */
+static uint32_t gcm_isalc_chunk_size = 32 * 1024;
+#endif
+
 #ifdef CAN_USE_GCM_ASM
 /* Does the architecture we run on support the MOVBE instruction? */
 boolean_t gcm_avx_can_use_movbe = B_FALSE;
@@ -91,6 +106,40 @@ static int gcm_encrypt_final_sse4_1(gcm_ctx_t *, crypto_data_t *, size_t);
 static int gcm_decrypt_final_sse4_1(gcm_ctx_t *, crypto_data_t *, size_t);
 static int gcm_init_sse4_1(gcm_ctx_t *, const uint8_t *, size_t, const uint8_t *,
     size_t, size_t);
+
+/* Intel ISAL assembly function declarations */
+extern void ASMABI icp_isalc_gcm_precomp_128_sse(gcm_ctx_t *ctx);
+extern void ASMABI icp_isalc_gcm_precomp_192_sse(gcm_ctx_t *ctx);
+extern void ASMABI icp_isalc_gcm_precomp_256_sse(gcm_ctx_t *ctx);
+
+extern void ASMABI icp_isalc_gcm_init_128_sse(gcm_ctx_t *ctx, const uint8_t *iv,
+    const uint8_t *aad, uint64_t aad_len, uint64_t tag_len);
+extern void ASMABI icp_isalc_gcm_init_192_sse(gcm_ctx_t *ctx, const uint8_t *iv,
+    const uint8_t *aad, uint64_t aad_len, uint64_t tag_len);
+extern void ASMABI icp_isalc_gcm_init_256_sse(gcm_ctx_t *ctx, const uint8_t *iv,
+    const uint8_t *aad, uint64_t aad_len, uint64_t tag_len);
+
+extern void ASMABI icp_isalc_gcm_enc_128_update_sse(gcm_ctx_t *ctx,
+    uint8_t *out, const uint8_t *in, uint64_t plaintext_len);
+extern void ASMABI icp_isalc_gcm_enc_192_update_sse(gcm_ctx_t *ctx,
+    uint8_t *out, const uint8_t *in, uint64_t plaintext_len);
+extern void ASMABI icp_isalc_gcm_enc_256_update_sse(gcm_ctx_t *ctx,
+    uint8_t *out, const uint8_t *in, uint64_t plaintext_len);
+
+extern void ASMABI icp_isalc_gcm_dec_128_update_sse(gcm_ctx_t *ctx,
+    uint8_t *out, const uint8_t *in, uint64_t plaintext_len);
+extern void ASMABI icp_isalc_gcm_dec_192_update_sse(gcm_ctx_t *ctx,
+    uint8_t *out, const uint8_t *in, uint64_t plaintext_len);
+extern void ASMABI icp_isalc_gcm_dec_256_update_sse(gcm_ctx_t *ctx,
+    uint8_t *out, const uint8_t *in, uint64_t plaintext_len);
+
+extern void ASMABI icp_isalc_gcm_enc_128_finalize_sse(gcm_ctx_t *ctx);
+extern void ASMABI icp_isalc_gcm_enc_192_finalize_sse(gcm_ctx_t *ctx);
+extern void ASMABI icp_isalc_gcm_enc_256_finalize_sse(gcm_ctx_t *ctx);
+
+extern void ASMABI icp_isalc_gcm_dec_128_finalize_sse(gcm_ctx_t *ctx);
+extern void ASMABI icp_isalc_gcm_dec_192_finalize_sse(gcm_ctx_t *ctx);
+extern void ASMABI icp_isalc_gcm_dec_256_finalize_sse(gcm_ctx_t *ctx);
 #endif
 
 #endif /* ifdef CAN_USE_GCM_ASM */
@@ -107,9 +156,16 @@ gcm_mode_encrypt_contiguous_blocks(gcm_ctx_t *ctx, char *data, size_t length,
     void (*xor_block)(uint8_t *, uint8_t *))
 {
 #ifdef CAN_USE_GCM_ASM
-	if (ctx->impl != GCM_IMPL_GENERIC)
+	if (ctx->impl != GCM_IMPL_GENERIC) {
+#ifdef CAN_USE_GCM_ASM_SSE
+		if (ctx->impl == GCM_IMPL_SSE4_1) {
+			return (gcm_mode_encrypt_contiguous_blocks_sse4_1(
+			    ctx, data, length, out, block_size));
+		}
+#endif
 		return (gcm_mode_encrypt_contiguous_blocks_avx(
 		    ctx, data, length, out, block_size));
+	}
 #endif
 
 	const gcm_impl_ops_t *gops;
@@ -398,8 +454,14 @@ gcm_decrypt_final(gcm_ctx_t *ctx, crypto_data_t *out, size_t block_size,
     void (*xor_block)(uint8_t *, uint8_t *))
 {
 #ifdef CAN_USE_GCM_ASM
-	if (ctx->impl != GCM_IMPL_GENERIC)
+	if (ctx->impl != GCM_IMPL_GENERIC) {
+#ifdef CAN_USE_GCM_ASM_SSE
+		if (ctx->impl == GCM_IMPL_SSE4_1) {
+			return (gcm_decrypt_final_sse4_1(ctx, out, block_size));
+		}
+#endif
 		return (gcm_decrypt_final_avx(ctx, out, block_size));
+	}
 #endif
 
 	const gcm_impl_ops_t *gops;
@@ -868,6 +930,13 @@ gcm_impl_init(void)
 			gcm_use_impl(GCM_IMPL_AVX);
 		}
 	}
+#ifdef CAN_USE_GCM_ASM_SSE
+	else if (gcm_sse4_1_will_work()) {
+		if (GCM_IMPL_READ(user_sel_impl) == IMPL_FASTEST) {
+			gcm_use_impl(GCM_IMPL_SSE4_1);
+		}
+	}
+#endif
 #endif
 	/* Finish initialization */
 	atomic_swap_32(&icp_gcm_impl, user_sel_impl);
@@ -1842,85 +1911,58 @@ static int
 gcm_init_sse4_1(gcm_ctx_t *ctx, const uint8_t *iv, size_t iv_len,
     const uint8_t *auth_data, size_t auth_data_len, size_t block_size)
 {
-	uint8_t *cb = (uint8_t *)ctx->gcm_cb;
-	uint64_t *H = ctx->gcm_H;
 	const void *keysched = ((aes_key_t *)ctx->gcm_keysched)->encr_ks.ks32;
-	int aes_rounds = ((aes_key_t *)ctx->gcm_keysched)->nr;
-	const uint8_t *datap = auth_data;
-	size_t chunk_size = (size_t)GCM_CHUNK_SIZE_READ;
-	size_t bleft;
+	int aes_rounds = ((aes_key_t *)keysched)->nr;
 
 	ASSERT(block_size == GCM_BLOCK_LEN);
 	ASSERT3S(((aes_key_t *)ctx->gcm_keysched)->ops->needs_byteswap, ==,
 	    B_FALSE);
 
-	size_t htab_len = (2 * 6 * sizeof (uint128_t));
+	/* Intel ISAL requires specific IV and tag lengths */
+	if (iv_len != 12) {
+		return (CRYPTO_MECHANISM_PARAM_INVALID);
+	}
 
+	/* Allocate Htable for Intel ISAL (2 * 8 * 2 * sizeof(uint64_t)) */
+	size_t htab_len = (2 * 8 * 2 * sizeof (uint64_t));
 	ctx->gcm_Htable = kmem_alloc(htab_len, KM_SLEEP);
 	if (ctx->gcm_Htable == NULL) {
 		return (CRYPTO_HOST_MEMORY);
 	}
+	ctx->gcm_htab_len = htab_len;
 
-	/* Init H (encrypt zero block) and create the initial counter block. */
-	memset(H, 0, sizeof (ctx->gcm_H));
 	kfpu_begin();
-	aes_encrypt_intel(keysched, aes_rounds,
-	    (const uint32_t *)H, (uint32_t *)H);
-
-	gcm_init_htab_sse4_1(ctx->gcm_Htable, H);
-
-	if (iv_len == 12) {
-		memcpy(cb, iv, 12);
-		cb[12] = 0;
-		cb[13] = 0;
-		cb[14] = 0;
-		cb[15] = 1;
-		/* We need the ICB later. */
-		memcpy(ctx->gcm_J0, cb, sizeof (ctx->gcm_J0));
-	} else {
-		/*
-		 * Most consumers use 12 byte IVs, so it's OK to use the
-		 * original routines for other IV sizes, just avoid nesting
-		 * kfpu_begin calls.
-		 */
+	
+	/* Precompute using Intel ISAL */
+	switch (aes_rounds) {
+	case 10:
+		icp_isalc_gcm_precomp_128_sse(ctx);
+		break;
+	case 12:
+		icp_isalc_gcm_precomp_192_sse(ctx);
+		break;
+	case 14:
+		icp_isalc_gcm_precomp_256_sse(ctx);
+		break;
+	default:
 		clear_fpu_regs();
 		kfpu_end();
-		gcm_format_initial_blocks(iv, iv_len, ctx, block_size,
-		    aes_copy_block, aes_xor_block);
-		kfpu_begin();
+		return (CRYPTO_MECHANISM_PARAM_INVALID);
 	}
 
-	memset(ctx->gcm_ghash, 0, sizeof (ctx->gcm_ghash));
-
-	/* Openssl post increments the counter, adjust for that. */
-	gcm_incr_counter_block(ctx);
-
-	/* Ghash AAD in chunk_size blocks. */
-	for (bleft = auth_data_len; bleft >= chunk_size; bleft -= chunk_size) {
-		GHASH_AVX(ctx, datap, chunk_size);
-		datap += chunk_size;
-		clear_fpu_regs();
-		kfpu_end();
-		kfpu_begin();
+	/* Initialize using Intel ISAL */
+	switch (aes_rounds) {
+	case 10:
+		icp_isalc_gcm_init_128_sse(ctx, iv, auth_data, auth_data_len, ctx->gcm_tag_len);
+		break;
+	case 12:
+		icp_isalc_gcm_init_192_sse(ctx, iv, auth_data, auth_data_len, ctx->gcm_tag_len);
+		break;
+	case 14:
+		icp_isalc_gcm_init_256_sse(ctx, iv, auth_data, auth_data_len, ctx->gcm_tag_len);
+		break;
 	}
-	/* Ghash the remainder and handle possible incomplete GCM block. */
-	if (bleft > 0) {
-		size_t incomp = bleft % block_size;
 
-		bleft -= incomp;
-		if (bleft > 0) {
-			GHASH_AVX(ctx, datap, bleft);
-			datap += bleft;
-		}
-		if (incomp > 0) {
-			/* Zero pad and hash incomplete last block. */
-			uint8_t *authp = (uint8_t *)ctx->gcm_tmp;
-
-			memset(authp, 0, block_size);
-			memcpy(authp, datap, incomp);
-			GHASH_AVX(ctx, authp, block_size);
-		}
-	}
 	clear_fpu_regs();
 	kfpu_end();
 	return (CRYPTO_SUCCESS);
@@ -1983,6 +2025,182 @@ gcm_encrypt_final_sse4_1(gcm_ctx_t *ctx, crypto_data_t *out, size_t block_size)
 		return (rv);
 
 	out->cd_offset += ctx->gcm_tag_len;
+	return (CRYPTO_SUCCESS);
+}
+
+static int
+gcm_mode_encrypt_contiguous_blocks_sse4_1(gcm_ctx_t *ctx, char *data, size_t length,
+    crypto_data_t *out, size_t block_size)
+{
+	const void *keysched = ((aes_key_t *)ctx->gcm_keysched)->encr_ks.ks32;
+	int aes_rounds = ((aes_key_t *)keysched)->nr;
+	size_t bleft = length;
+	size_t need = 0;
+	uint8_t *datap = (uint8_t *)data;
+	uint8_t *outp = NULL;
+	crypto_data_t *out_vec;
+	size_t chunk_size = (size_t)GCM_ISALC_CHUNK_SIZE_READ;
+	
+	ASSERT(block_size == GCM_BLOCK_LEN);
+	ASSERT3S(((aes_key_t *)ctx->gcm_keysched)->ops->needs_byteswap, ==,
+	    B_FALSE);
+	
+	if (length + ctx->gcm_remainder_len < block_size) {
+		/* accumulate bytes here and return */
+		memcpy((uint8_t *)ctx->gcm_remainder + ctx->gcm_remainder_len,
+		    datap, length);
+		ctx->gcm_remainder_len += length;
+		if (ctx->gcm_copy_to == NULL) {
+			ctx->gcm_copy_to = datap;
+		}
+		return (CRYPTO_SUCCESS);
+	}
+
+	out_vec = out;
+	if (crypto_init_ptrs(out, &outp, &need) != CRYPTO_SUCCESS) {
+		return (CRYPTO_ARGUMENTS_BAD);
+	}
+
+	kfpu_begin();
+	
+	/* Process any remainder from previous call */
+	if (ctx->gcm_remainder_len > 0) {
+		size_t need_to_complete = block_size - ctx->gcm_remainder_len;
+		memcpy((uint8_t *)ctx->gcm_remainder + ctx->gcm_remainder_len,
+		    datap, need_to_complete);
+		
+		/* Encrypt the complete block using Intel ISAL */
+		switch (aes_rounds) {
+		case 10:
+			icp_isalc_gcm_enc_128_update_sse(ctx, outp,
+			    (uint8_t *)ctx->gcm_remainder, block_size);
+			break;
+		case 12:
+			icp_isalc_gcm_enc_192_update_sse(ctx, outp,
+			    (uint8_t *)ctx->gcm_remainder, block_size);
+			break;
+		case 14:
+			icp_isalc_gcm_enc_256_update_sse(ctx, outp,
+			    (uint8_t *)ctx->gcm_remainder, block_size);
+			break;
+		}
+		
+		outp += block_size;
+		datap += need_to_complete;
+		bleft -= need_to_complete;
+		ctx->gcm_remainder_len = 0;
+		ctx->gcm_processed_data_len += block_size;
+	}
+
+	/* Process complete blocks in chunks */
+	while (bleft >= chunk_size) {
+		switch (aes_rounds) {
+		case 10:
+			icp_isalc_gcm_enc_128_update_sse(ctx, outp, datap, chunk_size);
+			break;
+		case 12:
+			icp_isalc_gcm_enc_192_update_sse(ctx, outp, datap, chunk_size);
+			break;
+		case 14:
+			icp_isalc_gcm_enc_256_update_sse(ctx, outp, datap, chunk_size);
+			break;
+		}
+		
+		datap += chunk_size;
+		outp += chunk_size;
+		bleft -= chunk_size;
+		ctx->gcm_processed_data_len += chunk_size;
+	}
+
+	/* Process remaining complete blocks */
+	size_t remaining_blocks = bleft & ~(block_size - 1);
+	if (remaining_blocks > 0) {
+		switch (aes_rounds) {
+		case 10:
+			icp_isalc_gcm_enc_128_update_sse(ctx, outp, datap, remaining_blocks);
+			break;
+		case 12:
+			icp_isalc_gcm_enc_192_update_sse(ctx, outp, datap, remaining_blocks);
+			break;
+		case 14:
+			icp_isalc_gcm_enc_256_update_sse(ctx, outp, datap, remaining_blocks);
+			break;
+		}
+		
+		datap += remaining_blocks;
+		outp += remaining_blocks;
+		bleft -= remaining_blocks;
+		ctx->gcm_processed_data_len += remaining_blocks;
+	}
+
+	/* Handle incomplete final block */
+	if (bleft > 0) {
+		memcpy((uint8_t *)ctx->gcm_remainder, datap, bleft);
+		ctx->gcm_remainder_len = bleft;
+	}
+
+	clear_fpu_regs();
+	kfpu_end();
+	
+	out_vec->cd_offset += length;
+	return (CRYPTO_SUCCESS);
+}
+
+static int
+gcm_decrypt_final_sse4_1(gcm_ctx_t *ctx, crypto_data_t *out, size_t block_size)
+{
+	const void *keysched = ((aes_key_t *)ctx->gcm_keysched)->encr_ks.ks32;
+	int aes_rounds = ((aes_key_t *)keysched)->nr;
+	uint8_t *ghash = (uint8_t *)ctx->gcm_ghash;
+	size_t pt_len;
+	uint8_t *remainder = (uint8_t *)ctx->gcm_remainder;
+	size_t rem_len = ctx->gcm_remainder_len;
+	int rv;
+
+	ASSERT(block_size == GCM_BLOCK_LEN);
+	ASSERT3S(((aes_key_t *)ctx->gcm_keysched)->ops->needs_byteswap, ==,
+	    B_FALSE);
+
+	if (ctx->gcm_tag_len == 0) {
+		pt_len = rem_len;
+	} else {
+		pt_len = rem_len - ctx->gcm_tag_len;
+		if (pt_len < 0) {
+			return (CRYPTO_ENCRYPTED_DATA_LEN_RANGE);
+		}
+	}
+
+	if (out->cd_length < pt_len) {
+		return (CRYPTO_DATA_LEN_RANGE);
+	}
+
+	kfpu_begin();
+	
+	/* Finalize using Intel ISAL */
+	switch (aes_rounds) {
+	case 10:
+		icp_isalc_gcm_dec_128_finalize_sse(ctx);
+		break;
+	case 12:
+		icp_isalc_gcm_dec_192_finalize_sse(ctx);
+		break;
+	case 14:
+		icp_isalc_gcm_dec_256_finalize_sse(ctx);
+		break;
+	}
+	
+	clear_fpu_regs();
+	kfpu_end();
+
+	/* Output decrypted data */
+	if (pt_len > 0) {
+		rv = crypto_put_output_data(remainder, out, pt_len);
+		if (rv != CRYPTO_SUCCESS)
+			return (rv);
+	}
+
+	out->cd_offset += pt_len;
+	ctx->gcm_remainder_len = 0;
 	return (CRYPTO_SUCCESS);
 }
 #endif
