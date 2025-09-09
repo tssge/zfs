@@ -2035,10 +2035,10 @@ gcm_mode_encrypt_contiguous_blocks_sse4_1(gcm_ctx_t *ctx, char *data, size_t len
 	const void *keysched = ((aes_key_t *)ctx->gcm_keysched)->encr_ks.ks32;
 	int aes_rounds = ((aes_key_t *)keysched)->nr;
 	size_t bleft = length;
-	size_t need = 0;
 	uint8_t *datap = (uint8_t *)data;
-	uint8_t *outp = NULL;
+	void *outp = NULL;
 	crypto_data_t *out_vec;
+	offset_t need = 0;
 	size_t chunk_size = (size_t)GCM_ISALC_CHUNK_SIZE_READ;
 	
 	ASSERT(block_size == GCM_BLOCK_LEN);
@@ -2057,9 +2057,7 @@ gcm_mode_encrypt_contiguous_blocks_sse4_1(gcm_ctx_t *ctx, char *data, size_t len
 	}
 
 	out_vec = out;
-	if (crypto_init_ptrs(out, &outp, &need) != CRYPTO_SUCCESS) {
-		return (CRYPTO_ARGUMENTS_BAD);
-	}
+	crypto_init_ptrs(out, &outp, &need);
 
 	kfpu_begin();
 	
@@ -2072,15 +2070,15 @@ gcm_mode_encrypt_contiguous_blocks_sse4_1(gcm_ctx_t *ctx, char *data, size_t len
 		/* Encrypt the complete block using Intel ISAL */
 		switch (aes_rounds) {
 		case 10:
-			icp_isalc_gcm_enc_128_update_sse(ctx, outp,
+			icp_isalc_gcm_enc_128_update_sse(ctx, (uint8_t *)outp,
 			    (uint8_t *)ctx->gcm_remainder, block_size);
 			break;
 		case 12:
-			icp_isalc_gcm_enc_192_update_sse(ctx, outp,
+			icp_isalc_gcm_enc_192_update_sse(ctx, (uint8_t *)outp,
 			    (uint8_t *)ctx->gcm_remainder, block_size);
 			break;
 		case 14:
-			icp_isalc_gcm_enc_256_update_sse(ctx, outp,
+			icp_isalc_gcm_enc_256_update_sse(ctx, (uint8_t *)outp,
 			    (uint8_t *)ctx->gcm_remainder, block_size);
 			break;
 		}
@@ -2096,13 +2094,13 @@ gcm_mode_encrypt_contiguous_blocks_sse4_1(gcm_ctx_t *ctx, char *data, size_t len
 	while (bleft >= chunk_size) {
 		switch (aes_rounds) {
 		case 10:
-			icp_isalc_gcm_enc_128_update_sse(ctx, outp, datap, chunk_size);
+			icp_isalc_gcm_enc_128_update_sse(ctx, (uint8_t *)outp, datap, chunk_size);
 			break;
 		case 12:
-			icp_isalc_gcm_enc_192_update_sse(ctx, outp, datap, chunk_size);
+			icp_isalc_gcm_enc_192_update_sse(ctx, (uint8_t *)outp, datap, chunk_size);
 			break;
 		case 14:
-			icp_isalc_gcm_enc_256_update_sse(ctx, outp, datap, chunk_size);
+			icp_isalc_gcm_enc_256_update_sse(ctx, (uint8_t *)outp, datap, chunk_size);
 			break;
 		}
 		
@@ -2117,13 +2115,13 @@ gcm_mode_encrypt_contiguous_blocks_sse4_1(gcm_ctx_t *ctx, char *data, size_t len
 	if (remaining_blocks > 0) {
 		switch (aes_rounds) {
 		case 10:
-			icp_isalc_gcm_enc_128_update_sse(ctx, outp, datap, remaining_blocks);
+			icp_isalc_gcm_enc_128_update_sse(ctx, (uint8_t *)outp, datap, remaining_blocks);
 			break;
 		case 12:
-			icp_isalc_gcm_enc_192_update_sse(ctx, outp, datap, remaining_blocks);
+			icp_isalc_gcm_enc_192_update_sse(ctx, (uint8_t *)outp, datap, remaining_blocks);
 			break;
 		case 14:
-			icp_isalc_gcm_enc_256_update_sse(ctx, outp, datap, remaining_blocks);
+			icp_isalc_gcm_enc_256_update_sse(ctx, (uint8_t *)outp, datap, remaining_blocks);
 			break;
 		}
 		
@@ -2151,7 +2149,6 @@ gcm_decrypt_final_sse4_1(gcm_ctx_t *ctx, crypto_data_t *out, size_t block_size)
 {
 	const void *keysched = ((aes_key_t *)ctx->gcm_keysched)->encr_ks.ks32;
 	int aes_rounds = ((aes_key_t *)keysched)->nr;
-	uint8_t *ghash = (uint8_t *)ctx->gcm_ghash;
 	size_t pt_len;
 	uint8_t *remainder = (uint8_t *)ctx->gcm_remainder;
 	size_t rem_len = ctx->gcm_remainder_len;
