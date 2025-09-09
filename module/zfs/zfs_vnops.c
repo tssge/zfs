@@ -2226,19 +2226,32 @@ zfs_dedupe_range(znode_t *inzp, uint64_t *inoffp, znode_t *outzp,
 		    RL_READER);
 	}
 
-	/* Use smaller block size for comparison buffer */
-	blksz = MIN(blksz, 1024 * 1024); /* Cap at 1MB for memory usage */
+	/*
+	 * Choose an appropriate chunk size for comparison that balances
+	 * memory usage with efficiency. Use a reasonable default that
+	 * works well with various recordsizes.
+	 */
+	size_t chunk_size = MIN(blksz, 64 * 1024); /* Default to 64KB */
+	
+	/*
+	 * For very large block sizes (e.g., 1MB+ recordsize), use a
+	 * larger chunk size to reduce the number of iterations, but
+	 * cap it at 256KB to keep memory usage reasonable.
+	 */
+	if (blksz > 128 * 1024) {
+		chunk_size = MIN(blksz, 256 * 1024);
+	}
 
 	/* Allocate comparison buffers */
-	inbuf = vmem_alloc(blksz, KM_SLEEP);
-	outbuf = vmem_alloc(blksz, KM_SLEEP);
+	inbuf = vmem_alloc(chunk_size, KM_SLEEP);
+	outbuf = vmem_alloc(chunk_size, KM_SLEEP);
 
 	/* Compare the ranges block by block */
 	for (offset = 0; offset < len; offset += cmplen) {
 		zfs_uio_t inuio, outuio;
 		iovec_t iniov, outiov;
 
-		cmplen = MIN(blksz, len - offset);
+		cmplen = MIN(chunk_size, len - offset);
 
 		/* Set up UIO for source */
 		iniov.iov_base = inbuf;
@@ -2288,8 +2301,8 @@ zfs_dedupe_range(znode_t *inzp, uint64_t *inoffp, znode_t *outzp,
 		}
 	}
 
-	vmem_free(inbuf, blksz);
-	vmem_free(outbuf, blksz);
+	vmem_free(inbuf, chunk_size);
+	vmem_free(outbuf, chunk_size);
 
 	if (error == 0 && *lenp > 0) {
 		/*
