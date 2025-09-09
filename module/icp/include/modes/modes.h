@@ -46,6 +46,22 @@ extern "C" {
 extern boolean_t gcm_avx_can_use_movbe;
 #endif
 
+/*
+ * Does the build chain support SSE4.1 for GCM routines.
+ */
+#if defined(__x86_64__) && defined(HAVE_SSE4_1) && \
+    defined(HAVE_AES) && defined(HAVE_PCLMULQDQ)
+#define	CAN_USE_GCM_ASM_SSE
+#endif
+
+/*
+ * Does the build chain support AVX for GCM routines.
+ */
+#if defined(__x86_64__) && defined(HAVE_AVX) && \
+    defined(HAVE_AES) && defined(HAVE_PCLMULQDQ)
+#define	CAN_USE_GCM_ASM_AVX
+#endif
+
 #define	CCM_MODE			0x00000010
 #define	GCM_MODE			0x00000020
 
@@ -134,6 +150,7 @@ typedef enum gcm_impl {
 	GCM_IMPL_GENERIC = 0,
 	GCM_IMPL_AVX,
 	GCM_IMPL_AVX2,
+	GCM_IMPL_SSE4_1,
 	GCM_IMPL_MAX,
 } gcm_impl;
 #endif

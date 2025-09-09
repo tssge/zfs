@@ -26,6 +26,7 @@
 
 #include <sys/zfs_context.h>
 #include <modes/modes.h>
+#include <modes/gcm_impl.h>
 #include <sys/crypto/common.h>
 #include <sys/crypto/impl.h>
 
