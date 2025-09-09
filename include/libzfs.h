@@ -1051,6 +1051,8 @@ _LIBZFS_H int zpool_disable_datasets(zpool_handle_t *, boolean_t);
 _LIBZFS_H void zpool_disable_datasets_os(zpool_handle_t *, boolean_t);
 _LIBZFS_H void zpool_disable_volume_os(const char *);
 
+_LIBZFS_H int zfs_get_hole_count(const char *, uint64_t *, uint64_t *);
+
 /*
  * Parse a features file for -o compatibility
  */

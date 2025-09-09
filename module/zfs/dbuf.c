@@ -2320,11 +2320,11 @@ dbuf_dirty(dmu_buf_impl_t *db, dmu_tx_t *tx)
 #endif
 	ASSERT(db->db.db_size != 0);
 
-	dprintf_dbuf(db, "size=%llx\n", (u_longlong_t)db->db.db_size);
+	dprintf_dbuf(db, "size=%llx txg=%llu\n", (u_longlong_t)db->db.db_size,
+	    (u_longlong_t)dmu_tx_get_txg(tx));
 
-	if (db->db_blkid != DMU_BONUS_BLKID && db->db_state != DB_NOFILL) {
+	if (db->db_blkid != DMU_BONUS_BLKID && db->db_state != DB_NOFILL)
 		dmu_objset_willuse_space(os, db->db.db_size, tx);
-	}
 
 	/*
 	 * If this buffer is dirty in an old transaction group we need
@@ -5430,6 +5430,141 @@ dbuf_write(dbuf_dirty_record_t *dr, arc_buf_t *data, dmu_tx_t *tx)
 		    children_ready_cb, dbuf_write_done, db,
 		    ZIO_PRIORITY_ASYNC_WRITE, ZIO_FLAG_MUSTSUCCEED, &zb);
 	}
+}
+
+/*
+ * Add all pending level zero blocks from a dnode's list of dirty records
+ * to the provided dirty tree.  Clear these same ranges from the free tree.
+ */
+static void
+dbuf_add_dirty_map(list_t *list, zfs_range_tree_t *dirty_tree,
+    zfs_range_tree_t *free_tree)
+{
+	dbuf_dirty_record_t *dr;
+
+	for (dr = list_head(list); dr != NULL; dr = list_next(list, dr)) {
+		dmu_buf_impl_t *db = dr->dr_dbuf;
+
+		if (db->db_buf == NULL)
+			(void) dbuf_read(db, NULL, DB_RF_MUST_SUCCEED);
+
+		if (db->db_level > 0) {
+			dbuf_add_dirty_map(&dr->dt.di.dr_children, dirty_tree,
+			    free_tree);
+		} else {
+			if (db->db_blkid == DMU_SPILL_BLKID ||
+			    db->db_blkid == DMU_BONUS_BLKID) {
+				continue;
+			} else {
+				uint64_t offset = db->db.db_offset;
+				uint64_t length = db->db.db_size;
+
+				zfs_range_tree_add(dirty_tree, offset, length);
+				zfs_range_tree_clear(free_tree, offset, length);
+			}
+		}
+	}
+}
+
+/*
+ * Generates two non-overlapping range trees which describe pending dirty
+ * and free ranges which have not yet been synced to the pool.  The
+ * passed syncing_txg will be updated to reflect the first TXG where
+ * the dnode was potentially dirty.
+ */
+int
+dbuf_generate_dirty_maps(dnode_t *dn, zfs_range_tree_t *dirty_tree,
+    zfs_range_tree_t *free_tree, uint64_t *syncing_txg, uint64_t open_txg)
+{
+#ifdef ZFS_DEBUG
+	spa_t *spa = dn->dn_objset->os_spa;
+#endif
+	multilist_sublist_t *mls;
+	uint64_t txg, txgoff;
+
+	zfs_range_tree_vacate(dirty_tree, NULL, NULL);
+	zfs_range_tree_vacate(free_tree, NULL, NULL);
+
+	txg = *syncing_txg;
+	txgoff = txg & TXG_MASK;
+
+	mls = multilist_sublist_lock_obj(
+	    &dn->dn_objset->os_dirty_dnodes[txgoff], dn);
+	mutex_enter(&dn->dn_mtx);
+
+	/*
+	 * Fast path.  The dnode has not been dirtied since it was last synced
+	 * and therefore cannot contain pending frees or dirty records.
+	 */
+	if (dn->dn_dirtycnt == 0) {
+		for (uint64_t i = txg; i <= open_txg; i++) {
+			uint64_t txgoff __maybe_unused = i & TXG_MASK;
+			ASSERT3P(dn->dn_free_ranges[txgoff], ==, NULL);
+			ASSERT(list_is_empty(&dn->dn_dirty_records[txgoff]));
+		}
+
+		mutex_exit(&dn->dn_mtx);
+		multilist_sublist_unlock(mls);
+		return (0);
+	}
+
+	/*
+	 * Rather than wait for the syncing transaction to complete, which
+	 * can take a considerable amount of time.  Determine if the given
+	 * dnode is still dirty and has pending free blocks and dirty records
+	 * which must be added to the pending mappings.  If the dnode is
+	 * determined to be dirty it will remain dirty until the sublist
+	 * lock is released.
+	 */
+	boolean_t dirty = B_FALSE;
+	for (dnode_t *mls_dn = multilist_sublist_head(mls); mls_dn != NULL;
+	    mls_dn = multilist_sublist_next(mls, mls_dn)) {
+		if (dn == mls_dn) {
+			dirty = B_TRUE;
+			break;
+		}
+	}
+
+	if (!dirty)
+		txg++;
+
+	for (uint64_t i = txg; i <= open_txg; i++) {
+		uint64_t start, length;
+		zfs_range_tree_t *rt;
+		zfs_range_seg_t *rs;
+		zfs_btree_index_t where;
+
+#ifdef ZFS_DEBUG
+		txg_verify(spa, i);
+#endif
+		txgoff = i & TXG_MASK;
+
+		rt = dn->dn_free_ranges[txgoff];
+		if (rt != NULL) {
+			int blkshift = dn->dn_datablkshift;
+			for (rs = zfs_btree_first(&rt->rt_root, &where);
+			    rs != NULL;
+			    rs = zfs_btree_next(&rt->rt_root, &where, &where)) {
+				start = zfs_rs_get_start(rs, rt);
+				length = (zfs_rs_get_end(rs, rt) - start);
+
+				start = start << blkshift;
+				length = length << blkshift;
+				zfs_range_tree_add(free_tree, start, length);
+				zfs_range_tree_clear(dirty_tree, start, length);
+			}
+		}
+
+		dbuf_add_dirty_map(&dn->dn_dirty_records[txgoff], dirty_tree,
+		    free_tree);
+	}
+
+	*syncing_txg = txg;
+
+	mutex_exit(&dn->dn_mtx);
+	multilist_sublist_unlock(mls);
+
+	return (0);
 }
 
 EXPORT_SYMBOL(dbuf_find);
