@@ -52,6 +52,7 @@
 .Cm import
 .Op Fl d Ar dataset
 .Op Fl v
+.Op Fl l Ar level
 .Ar file.gz
 .
 .Sh DESCRIPTION
@@ -185,6 +186,7 @@ non-default level is desired).
 .Cm import
 .Op Fl d Ar dataset
 .Op Fl v
+.Op Fl l Ar level
 .Ar file.gz
 .Xc
 Import a gzip file as a ZFS stream, preserving the gzip compression.
@@ -200,6 +202,10 @@ if not specified.
 .It Fl v
 Verbose mode.
 Shows progress information for large files during processing.
+.It Fl l Ar level
+Specifies the gzip compression level to use in the ZFS stream.
+Must be between 1 and 9, where 1 is fastest compression and 9 is best compression.
+Defaults to 6 if not specified.
 .El
 .El
 .
@@ -207,6 +213,11 @@ Shows progress information for large files during processing.
 Import a gzip file as a ZFS dataset while preserving compression:
 .Bd -literal
 # Nm zstream import Fl d Ar pool/dataset Ar file.gz | Nm zfs recv Ar pool/dataset
+.Ed
+.Pp
+Import with verbose output and custom compression level:
+.Bd -literal
+# Nm zstream import Fl v Fl l Ar 9 Fl d Ar pool/dataset Ar file.gz | Nm zfs recv Ar pool/dataset
 .Ed
 .Pp
 Heal a dataset that was corrupted due to OpenZFS bug #12762.

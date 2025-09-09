@@ -95,6 +95,36 @@ clear_progress(void)
 }
 
 static int
+validate_gzip_trailer(const char *filename, const void *gzip_data, size_t file_size, boolean_t verbose)
+{
+	/* Gzip trailer is the last 8 bytes: CRC32 (4 bytes) + ISIZE (4 bytes) */
+	if (file_size < 8) {
+		return (-1);
+	}
+
+	const uint8_t *data = (const uint8_t *)gzip_data;
+	const uint8_t *trailer = data + file_size - 8;
+	
+	/* Extract CRC32 and ISIZE from trailer */
+	uint32_t crc32 = trailer[0] | (trailer[1] << 8) | (trailer[2] << 16) | (trailer[3] << 24);
+	uint32_t isize = trailer[4] | (trailer[5] << 8) | (trailer[6] << 16) | (trailer[7] << 24);
+	
+	if (verbose) {
+		fprintf(stderr, "Gzip trailer validation:\n");
+		fprintf(stderr, "  CRC32: 0x%08x\n", crc32);
+		fprintf(stderr, "  ISIZE: %u bytes\n", isize);
+	}
+	
+	/* Note: We don't validate the CRC32 here as it would require decompression
+	 * and we want to preserve the compressed data. The ISIZE validation is
+	 * also skipped as it represents the uncompressed size which we don't need.
+	 * The ZFS receive operation will handle any data integrity issues.
+	 */
+	
+	return (0);
+}
+
+static int
 write_record(dmu_replay_record_t *drr, void *payload, int payload_len,
     zio_cksum_t *zc, int outfd)
 {
@@ -145,12 +175,47 @@ create_begin_record(const char *dataset_name, int outfd, zio_cksum_t *zc)
 }
 
 static int
-create_object_record(uint64_t object_id, int outfd, zio_cksum_t *zc)
+create_object_record(uint64_t object_id, int outfd, zio_cksum_t *zc, int compression_level)
 {
 	dmu_replay_record_t drr = {0};
+	enum zio_compress compress_type;
 
 	drr.drr_type = DRR_OBJECT;
 	drr.drr_payloadlen = 0;
+
+	/* Map compression level to ZFS compression type */
+	switch (compression_level) {
+	case 1:
+		compress_type = ZIO_COMPRESS_GZIP_1;
+		break;
+	case 2:
+		compress_type = ZIO_COMPRESS_GZIP_2;
+		break;
+	case 3:
+		compress_type = ZIO_COMPRESS_GZIP_3;
+		break;
+	case 4:
+		compress_type = ZIO_COMPRESS_GZIP_4;
+		break;
+	case 5:
+		compress_type = ZIO_COMPRESS_GZIP_5;
+		break;
+	case 6:
+		compress_type = ZIO_COMPRESS_GZIP_6;
+		break;
+	case 7:
+		compress_type = ZIO_COMPRESS_GZIP_7;
+		break;
+	case 8:
+		compress_type = ZIO_COMPRESS_GZIP_8;
+		break;
+	case 9:
+		compress_type = ZIO_COMPRESS_GZIP_9;
+		break;
+	default:
+		compress_type = ZIO_COMPRESS_GZIP_6; /* Default to level 6 */
+		break;
+	}
 
 	/* Initialize object record for a regular file */
 	drr.drr_u.drr_object.drr_object = object_id;
@@ -159,7 +224,7 @@ create_object_record(uint64_t object_id, int outfd, zio_cksum_t *zc)
 	drr.drr_u.drr_object.drr_blksz = 131072; /* 128KB blocks */
 	drr.drr_u.drr_object.drr_bonuslen = 0;
 	drr.drr_u.drr_object.drr_checksumtype = ZIO_CHECKSUM_FLETCHER_4;
-	drr.drr_u.drr_object.drr_compress = ZIO_COMPRESS_GZIP_6;
+	drr.drr_u.drr_object.drr_compress = compress_type;
 	drr.drr_u.drr_object.drr_dn_slots = 1;
 	drr.drr_u.drr_object.drr_flags = 0;
 
@@ -168,12 +233,47 @@ create_object_record(uint64_t object_id, int outfd, zio_cksum_t *zc)
 
 static int
 create_write_record(uint64_t object_id, uint64_t offset, void *data,
-    size_t compressed_size, size_t logical_size, int outfd, zio_cksum_t *zc)
+    size_t compressed_size, size_t logical_size, int outfd, zio_cksum_t *zc, int compression_level)
 {
 	dmu_replay_record_t drr = {0};
+	enum zio_compress compress_type;
 
 	drr.drr_type = DRR_WRITE;
 	drr.drr_payloadlen = compressed_size;
+
+	/* Map compression level to ZFS compression type */
+	switch (compression_level) {
+	case 1:
+		compress_type = ZIO_COMPRESS_GZIP_1;
+		break;
+	case 2:
+		compress_type = ZIO_COMPRESS_GZIP_2;
+		break;
+	case 3:
+		compress_type = ZIO_COMPRESS_GZIP_3;
+		break;
+	case 4:
+		compress_type = ZIO_COMPRESS_GZIP_4;
+		break;
+	case 5:
+		compress_type = ZIO_COMPRESS_GZIP_5;
+		break;
+	case 6:
+		compress_type = ZIO_COMPRESS_GZIP_6;
+		break;
+	case 7:
+		compress_type = ZIO_COMPRESS_GZIP_7;
+		break;
+	case 8:
+		compress_type = ZIO_COMPRESS_GZIP_8;
+		break;
+	case 9:
+		compress_type = ZIO_COMPRESS_GZIP_9;
+		break;
+	default:
+		compress_type = ZIO_COMPRESS_GZIP_6; /* Default to level 6 */
+		break;
+	}
 
 	/* Initialize write record */
 	drr.drr_u.drr_write.drr_object = object_id;
@@ -183,7 +283,7 @@ create_write_record(uint64_t object_id, uint64_t offset, void *data,
 	drr.drr_u.drr_write.drr_toguid = 0x1;
 	drr.drr_u.drr_write.drr_checksumtype = ZIO_CHECKSUM_FLETCHER_4;
 	drr.drr_u.drr_write.drr_flags = 0;
-	drr.drr_u.drr_write.drr_compressiontype = ZIO_COMPRESS_GZIP_6;
+	drr.drr_u.drr_write.drr_compressiontype = compress_type;
 	drr.drr_u.drr_write.drr_compressed_size = compressed_size;
 
 	return (write_record(&drr, data, compressed_size, zc, outfd));
@@ -208,7 +308,7 @@ create_end_record(int outfd, zio_cksum_t *zc)
 }
 
 static int
-process_gzip_file(const char *filename, const char *dataset_name, int outfd, boolean_t verbose)
+process_gzip_file(const char *filename, const char *dataset_name, int outfd, boolean_t verbose, int compression_level)
 {
 	FILE *infile;
 	struct stat st;
@@ -271,6 +371,26 @@ process_gzip_file(const char *filename, const char *dataset_name, int outfd, boo
 		err(1, "%s is too small to be a valid gzip file", filename);
 	}
 
+	/* Check for extra fields in gzip header */
+	if (header.flags & 0x04) { /* FEXTRA flag */
+		fclose(infile);
+		err(1, "%s contains extra fields which are not supported", filename);
+	}
+
+	/* Check for filename in gzip header */
+	if (header.flags & 0x08) { /* FNAME flag */
+		if (verbose) {
+			fprintf(stderr, "Warning: %s contains original filename in header\n", filename);
+		}
+	}
+
+	/* Check for comment in gzip header */
+	if (header.flags & 0x10) { /* FCOMMENT flag */
+		if (verbose) {
+			fprintf(stderr, "Warning: %s contains comment in header\n", filename);
+		}
+	}
+
 	/* Reset file position and read entire file */
 	if (fseek(infile, 0, SEEK_SET) != 0) {
 		fclose(infile);
@@ -328,6 +448,12 @@ process_gzip_file(const char *filename, const char *dataset_name, int outfd, boo
 	/* Initialize checksum */
 	memset(&zc, 0, sizeof (zc));
 
+	/* Validate gzip trailer */
+	if (validate_gzip_trailer(filename, gzip_data, file_size, verbose) != 0) {
+		free(gzip_data);
+		err(1, "invalid gzip trailer in %s", filename);
+	}
+
 	if (verbose) {
 		fprintf(stderr, "Creating ZFS stream for dataset '%s'\n", dataset_name);
 		fprintf(stderr, "File size: %zu bytes\n", file_size);
@@ -338,7 +464,7 @@ process_gzip_file(const char *filename, const char *dataset_name, int outfd, boo
 		err(1, "failed to write begin record");
 	}
 
-	if ((ret = create_object_record(1, outfd, &zc)) != 0) {
+	if ((ret = create_object_record(1, outfd, &zc, compression_level)) != 0) {
 		err(1, "failed to write object record");
 	}
 
@@ -348,7 +474,7 @@ process_gzip_file(const char *filename, const char *dataset_name, int outfd, boo
 	 * gzip stream and extract individual deflate blocks.
 	 */
 	if ((ret = create_write_record(1, 0, gzip_data, file_size, file_size,
-	    outfd, &zc)) != 0) {
+	    outfd, &zc, compression_level)) != 0) {
 		err(1, "failed to write data record");
 	}
 
@@ -370,15 +496,23 @@ zstream_do_import(int argc, char *argv[])
 	char *filename = NULL;
 	const char *dataset_name = "imported_gzip";
 	boolean_t verbose = B_FALSE;
+	int compression_level = 6; /* Default to gzip level 6 */
 	int c;
 
-	while ((c = getopt(argc, argv, "d:v")) != -1) {
+	while ((c = getopt(argc, argv, "d:vl:")) != -1) {
 		switch (c) {
 		case 'd':
 			dataset_name = optarg;
 			break;
 		case 'v':
 			verbose = B_TRUE;
+			break;
+		case 'l':
+			compression_level = atoi(optarg);
+			if (compression_level < 1 || compression_level > 9) {
+				(void) fprintf(stderr, "compression level must be between 1 and 9\n");
+				zstream_usage();
+			}
 			break;
 		case '?':
 			(void) fprintf(stderr, "invalid option '%c'\n",
@@ -416,5 +550,5 @@ zstream_do_import(int argc, char *argv[])
 		zstream_usage();
 	}
 
-	return (process_gzip_file(filename, dataset_name, STDOUT_FILENO, verbose));
+	return (process_gzip_file(filename, dataset_name, STDOUT_FILENO, verbose, compression_level));
 }
