@@ -828,6 +828,15 @@ zpl_fiemap(struct inode *ip, struct fiemap_extent_info *fei,
 	fstrans_cookie_t cookie;
 	int error = 0;
 
+	/*
+	 * Always force FIEMAP_FLAG_SYNC to handle in-flight I/O correctly.
+	 * This ensures that dirty pages are synced before reporting extents,
+	 * avoiding races with concurrent writes. This is a no-op for files
+	 * without dirty pages and provides correct semantics for the majority
+	 * of use cases. See PR #9554 review feedback.
+	 */
+	flags |= FIEMAP_FLAG_SYNC;
+
 	/* Incompatible ZFS-only flags masked out of compatibility check */
 	fei->fi_flags &= ~ZFS_FIEMAP_FLAGS_ZFS;
 

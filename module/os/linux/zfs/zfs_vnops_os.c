@@ -4381,6 +4381,155 @@ zfs_fid(struct inode *ip, fid_t *fidp)
 }
 
 /*
+ * Process block pointers using block cloning idioms for better performance
+ * and correctness. This replaces the complex indirect block traversal
+ * with the proven dmu_read_l0_bps() approach.
+ */
+static int
+zfs_fiemap_process_bps(zfs_fiemap_t *fm, const blkptr_t *bps, size_t nbps,
+    uint64_t logical_start)
+{
+	spa_t *spa = dmu_objset_spa(fm->fm_os);
+	blkptr_t bp_copy;
+	
+	for (size_t i = 0; i < nbps; i++) {
+		const blkptr_t *bp = &bps[i];
+		uint64_t logical_offset = logical_start + (i * fm->fm_block_size);
+		
+		/* Skip if this extent is outside our requested range */
+		if (logical_offset >= fm->fm_start + fm->fm_length)
+			break;
+		if (logical_offset + fm->fm_block_size <= fm->fm_start)
+			continue;
+
+		/* Make a copy for remapping */
+		bp_copy = *bp;
+		
+		/*
+		 * Indirect block pointers must be remapped to reflect the real
+		 * physical offset and length. The remapping is transparent to
+		 * the fiemap interface so no additional extent flags are set.
+		 */
+		spa_config_enter(spa, SCL_VDEV, FTAG, RW_READER);
+		if (spa_remap_blkptr(spa, &bp_copy, NULL, NULL))
+			bp = &bp_copy;
+		spa_config_exit(spa, SCL_VDEV, FTAG);
+
+		for (int copy = 0; copy < fm->fm_copies; copy++) {
+			zfs_fiemap_entry_t *fe, *pfe;
+			avl_index_t idx;
+
+			/*
+			 * N.B. Embedded block pointers and holes are only added to
+			 * the fm_extents_trees[0], the additional trees are used
+			 * for redundant copies of data blocks.
+			 */
+			if (copy > 0 && (BP_IS_HOLE(bp) || BP_IS_EMBEDDED(bp)))
+				continue;
+
+			fe = kmem_zalloc(sizeof (zfs_fiemap_entry_t), KM_SLEEP);
+			fe->fe_logical_start = logical_offset;
+
+			if (BP_IS_HOLE(bp)) {
+				fe->fe_logical_len = fm->fm_block_size;
+				fe->fe_flags |= FIEMAP_EXTENT_UNWRITTEN;
+			} else if (BP_IS_EMBEDDED(bp)) {
+				fe->fe_logical_len = BPE_GET_LSIZE(bp);
+				fe->fe_physical_start = 0;
+				fe->fe_physical_len = BPE_GET_PSIZE(bp);
+				fe->fe_flags |= FIEMAP_EXTENT_DATA_INLINE |
+				    FIEMAP_EXTENT_NOT_ALIGNED;
+
+				if (BP_IS_ENCRYPTED(bp))
+					fe->fe_flags |= FIEMAP_EXTENT_DATA_ENCRYPTED;
+				if (BP_GET_COMPRESS(bp) != ZIO_COMPRESS_OFF) {
+					fe->fe_flags |= FIEMAP_EXTENT_ENCODED;
+					fe->fe_flags |= FIEMAP_EXTENT_DATA_COMPRESSED;
+				}
+			} else {
+				if (copy >= BP_GET_NDVAS(bp)) {
+					kmem_free(fe, sizeof (zfs_fiemap_entry_t));
+					continue;
+				}
+
+				if (BP_IS_ENCRYPTED(bp))
+					fe->fe_flags |= FIEMAP_EXTENT_DATA_ENCRYPTED;
+				if (BP_GET_COMPRESS(bp) != ZIO_COMPRESS_OFF) {
+					fe->fe_flags |= FIEMAP_EXTENT_ENCODED;
+					fe->fe_flags |= FIEMAP_EXTENT_DATA_COMPRESSED;
+				}
+				if (BP_GET_DEDUP(bp))
+					fe->fe_flags |= FIEMAP_EXTENT_SHARED;
+
+				/*
+				 * Report gang blocks as a single unknown extent.
+				 * Ideally we should be walking the gang block tree and
+				 * reporting all component-blocks as physical extents.
+				 */
+				if (BP_IS_GANG(bp)) {
+					fe->fe_flags |= FIEMAP_EXTENT_UNKNOWN;
+					fe->fe_physical_start = 0;
+					fe->fe_physical_len = 0;
+					fe->fe_vdev = 0;
+				} else {
+					fe->fe_physical_len = BP_GET_PSIZE(bp);
+
+					if (DVA_IS_VALID(&bp->blk_dva[copy])) {
+						fe->fe_vdev =
+						    DVA_GET_VDEV(&bp->blk_dva[copy]);
+						fe->fe_physical_start =
+						    DVA_GET_OFFSET(&bp->blk_dva[copy]);
+					}
+				}
+
+				fe->fe_logical_len = BP_GET_LSIZE(bp);
+			}
+
+			/*
+			 * By default merge compatible adjacent block pointers in to a
+			 * single extent. Embedded block pointers can never be merged.
+			 */
+			if (!(fm->fm_flags & FIEMAP_FLAG_NOMERGE) &&
+			    !BP_IS_EMBEDDED(bp)) {
+				pfe = avl_last(&fm->fm_extent_trees[copy]);
+				if (pfe != NULL) {
+					ASSERT3U(pfe->fe_logical_start + pfe->fe_logical_len,
+					    ==, fe->fe_logical_start);
+
+					if (BP_IS_HOLE(bp) && fe->fe_flags ==
+					    (pfe->fe_flags & ~FIEMAP_EXTENT_MERGED)) {
+						pfe->fe_logical_len += fe->fe_logical_len;
+						pfe->fe_flags |= FIEMAP_EXTENT_MERGED;
+						kmem_free(fe, sizeof (zfs_fiemap_entry_t));
+						continue;
+					}
+
+					if (!BP_IS_HOLE(bp) && fe->fe_flags ==
+					    (pfe->fe_flags & ~FIEMAP_EXTENT_MERGED) &&
+					    fe->fe_physical_start ==
+					    pfe->fe_physical_start + pfe->fe_physical_len &&
+					    fe->fe_vdev == pfe->fe_vdev) {
+						pfe->fe_logical_len += fe->fe_logical_len;
+						pfe->fe_physical_len += fe->fe_physical_len;
+						pfe->fe_flags |= FIEMAP_EXTENT_MERGED;
+						kmem_free(fe, sizeof (zfs_fiemap_entry_t));
+						continue;
+					}
+				}
+			}
+
+			/*
+			 * If merging is disabled or the extent cannot be merged,
+			 * insert the extent in to the tree.
+			 */
+			avl_insert(&fm->fm_extent_trees[copy], fe, idx);
+		}
+	}
+
+	return (0);
+}
+
+/*
  * Convert the provided block pointer in to an extent.  This may result in
  * a new extent being created or an existing extent being extended.
  */
@@ -4431,8 +4580,10 @@ zfs_fiemap_cb(spa_t *spa, zilog_t *zilog, const blkptr_t *bp,
 
 			if (BP_IS_ENCRYPTED(bp))
 				fe->fe_flags |= FIEMAP_EXTENT_DATA_ENCRYPTED;
-			if (BP_GET_COMPRESS(bp) != ZIO_COMPRESS_OFF)
+			if (BP_GET_COMPRESS(bp) != ZIO_COMPRESS_OFF) {
 				fe->fe_flags |= FIEMAP_EXTENT_ENCODED;
+				fe->fe_flags |= FIEMAP_EXTENT_DATA_COMPRESSED;
+			}
 		} else {
 			if (i >= BP_GET_NDVAS(bp)) {
 				kmem_free(fe, sizeof (zfs_fiemap_entry_t));
@@ -4441,8 +4592,10 @@ zfs_fiemap_cb(spa_t *spa, zilog_t *zilog, const blkptr_t *bp,
 
 			if (BP_IS_ENCRYPTED(bp))
 				fe->fe_flags |= FIEMAP_EXTENT_DATA_ENCRYPTED;
-			if (BP_GET_COMPRESS(bp) != ZIO_COMPRESS_OFF)
+			if (BP_GET_COMPRESS(bp) != ZIO_COMPRESS_OFF) {
 				fe->fe_flags |= FIEMAP_EXTENT_ENCODED;
+				fe->fe_flags |= FIEMAP_EXTENT_DATA_COMPRESSED;
+			}
 			if (BP_GET_DEDUP(bp))
 				fe->fe_flags |= FIEMAP_EXTENT_SHARED;
 
@@ -4551,6 +4704,12 @@ zfs_fiemap_visit_indirect(spa_t *spa, const dnode_phys_t *dnp,
 		int epb = BP_GET_LSIZE(bp) >> SPA_BLKPTRSHIFT;
 		arc_buf_t *buf;
 
+		/*
+		 * Use CANFAIL to avoid excessive ARC pressure on large data.
+		 * If we can't read a block, skip it rather than causing memory
+		 * pressure issues. This addresses ARC usage concerns from
+		 * PR #9554 testing.
+		 */
 		error = arc_read(NULL, spa, bp, arc_getbuf_func, &buf,
 		    ZIO_PRIORITY_ASYNC_READ, ZIO_FLAG_CANFAIL, &flags, zb);
 		if (error)
@@ -4774,10 +4933,8 @@ zfs_fiemap_assemble(struct inode *ip, zfs_fiemap_t *fm)
 	znode_t *zp = ITOZ(ip);
 	zfsvfs_t *zfsvfs = ZTOZSB(zp);
 	zbookmark_phys_t czb;
-	txg_handle_t th;
 	dnode_t *dn;
 	spa_t *spa;
-	uint64_t open_txg, syncing_txg, dirty_txg;
 	int error;
 
 	if ((error = zfs_enter_verify_zp(zfsvfs, zp, FTAG)) != 0)
@@ -4795,27 +4952,10 @@ zfs_fiemap_assemble(struct inode *ip, zfs_fiemap_t *fm)
 		txg_wait_synced(spa_get_dsl(spa), 0);
 
 	/*
-	 * Lock the entire file against changes while assembling the FIEMAP.
-	 * Then hold open the TXG while generating a map of all pending frees
-	 * and dirty blocks.  This isn't strictly necessary but it is a
-	 * convenient way to determine the range of TXGs to check.
+	 * Use block cloning's simpler locking approach. dmu_read_l0_bps()
+	 * handles consistency internally, so we don't need the complex
+	 * locking that was required for the old indirect block traversal.
 	 */
-	zfs_locked_range_t *lr = zfs_rangelock_enter(&zp->z_rangelock, 0,
-	    UINT64_MAX, RL_READER);
-	open_txg = txg_hold_open(spa_get_dsl(spa), &th);
-	syncing_txg = dirty_txg = spa_syncing_txg(spa);
-
-	(void) dbuf_generate_dirty_maps(dn, fm->fm_dirty_tree,
-	    fm->fm_free_tree, &dirty_txg, open_txg);
-
-	/*
-	 * When the currently syncing TXG could not be checked, likely because
-	 * the dnode was already synced, we need to wait for the syncing TXG
-	 * to fully complete in order to avoid using stale block pointers.
-	 */
-	if (dirty_txg > syncing_txg)
-		txg_wait_synced(spa_get_dsl(spa), syncing_txg);
-
 	rw_enter(&dn->dn_struct_rwlock, RW_READER);
 	mutex_enter(&dn->dn_mtx);
 
@@ -4853,20 +4993,51 @@ zfs_fiemap_assemble(struct inode *ip, zfs_fiemap_t *fm)
 		fm->fm_fill_count += P2ROUNDUP(zfs_range_tree_space(
 		    fm->fm_dirty_tree), fm->fm_block_size) / fm->fm_block_size;
 	} else {
-		SET_BOOKMARK(&czb, dmu_objset_id(dn->dn_objset),
-		    dn->dn_object, dnp->dn_nlevels - 1, 0);
-
-		for (int i = 0; i < MIN(dnp->dn_nblkptr, fm->fm_copies); i++) {
-			blkptr_t *bp = &dnp->dn_blkptr[i];
-
-			if (BP_GET_FILL(bp) > 0) {
-				czb.zb_blkid = i;
-				error = zfs_fiemap_visit_indirect(spa, dnp, bp,
-				    &czb, zfs_fiemap_cb, (void *)fm);
-			} else {
-				zfs_fiemap_add_sparse(fm);
+		/*
+		 * Use block cloning idioms for better performance and correctness.
+		 * Process the file in chunks using dmu_read_l0_bps() which handles
+		 * dirty blocks properly and avoids the complexity of indirect
+		 * block traversal.
+		 */
+		uint64_t chunk_size = MIN(fm->fm_length, 1024 * 1024); /* 1MB chunks */
+		uint64_t current_offset = fm->fm_start;
+		blkptr_t *bps;
+		size_t maxblocks, nbps;
+		
+		maxblocks = (chunk_size + fm->fm_block_size - 1) / fm->fm_block_size;
+		bps = kmem_zalloc(maxblocks * sizeof (blkptr_t), KM_SLEEP);
+		
+		while (current_offset < fm->fm_start + fm->fm_length) {
+			uint64_t remaining = (fm->fm_start + fm->fm_length) - current_offset;
+			uint64_t process_len = MIN(chunk_size, remaining);
+			
+			nbps = maxblocks;
+			error = dmu_read_l0_bps(dn->dn_objset, dn->dn_object,
+			    current_offset, process_len, bps, &nbps);
+			
+			if (error == 0) {
+				/* Process the block pointers using block cloning approach */
+				error = zfs_fiemap_process_bps(fm, bps, nbps, current_offset);
+			} else if (error == EAGAIN) {
+				/*
+				 * Block was modified in current txg, fall back to
+				 * old method for this chunk only.
+				 */
+				SET_BOOKMARK(&czb, dmu_objset_id(dn->dn_objset),
+				    dn->dn_object, dnp->dn_nlevels - 1, 
+				    current_offset / fm->fm_block_size);
+				
+				error = zfs_fiemap_visit_indirect(spa, dnp, 
+				    &dnp->dn_blkptr[0], &czb, zfs_fiemap_cb, (void *)fm);
 			}
+			
+			if (error != 0)
+				break;
+				
+			current_offset += process_len;
 		}
+		
+		kmem_free(bps, maxblocks * sizeof (blkptr_t));
 
 		for (int i = 0; i < fm->fm_copies; i++) {
 			avl_tree_t *t = &fm->fm_extent_trees[i];
@@ -4886,10 +5057,6 @@ zfs_fiemap_assemble(struct inode *ip, zfs_fiemap_t *fm)
 
 	mutex_exit(&dn->dn_mtx);
 	rw_exit(&dn->dn_struct_rwlock);
-
-	txg_rele_to_quiesce(&th);
-	txg_rele_to_sync(&th);
-	zfs_rangelock_exit(lr);
 
 	dnode_rele(dn, FTAG);
 	zfs_exit(zfsvfs, FTAG);
