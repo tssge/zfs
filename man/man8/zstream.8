@@ -51,6 +51,7 @@
 .Nm
 .Cm import
 .Op Fl d Ar dataset
+.Op Fl v
 .Ar file.gz
 .
 .Sh DESCRIPTION
@@ -183,6 +184,7 @@ non-default level is desired).
 .Nm
 .Cm import
 .Op Fl d Ar dataset
+.Op Fl v
 .Ar file.gz
 .Xc
 Import a gzip file as a ZFS stream, preserving the gzip compression.
@@ -195,6 +197,9 @@ Specifies the dataset name to use in the generated stream.
 Defaults to
 .Sy imported_gzip
 if not specified.
+.It Fl v
+Verbose mode.
+Shows progress information for large files during processing.
 .El
 .El
 .

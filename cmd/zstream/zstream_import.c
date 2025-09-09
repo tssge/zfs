@@ -47,6 +47,9 @@
 #define	GZIP_MAGIC2	0x8b
 #define	GZIP_METHOD_DEFLATE	0x08
 
+/* Progress reporting threshold - only show progress for files > 1MB */
+#define	PROGRESS_THRESHOLD	(1024 * 1024)
+
 
 
 /*
@@ -61,6 +64,35 @@ typedef struct gzip_header {
 	uint8_t xfl;
 	uint8_t os;
 } gzip_header_t;
+
+static void
+show_progress(const char *filename, size_t bytes_read, size_t total_bytes)
+{
+	static time_t last_update = 0;
+	time_t now = time(NULL);
+	
+	/* Only update every second to avoid flooding stderr */
+	if (now - last_update < 1)
+		return;
+	
+	last_update = now;
+	
+	/* Calculate percentage */
+	int percent = (int)((bytes_read * 100) / total_bytes);
+	
+	/* Show progress on stderr so it doesn't interfere with stdout stream */
+	fprintf(stderr, "\rProcessing %s: %zu/%zu bytes (%d%%)", 
+	    filename, bytes_read, total_bytes, percent);
+	fflush(stderr);
+}
+
+static void
+clear_progress(void)
+{
+	/* Clear the progress line */
+	fprintf(stderr, "\r%*s\r", 80, "");
+	fflush(stderr);
+}
 
 static int
 write_record(dmu_replay_record_t *drr, void *payload, int payload_len,
@@ -176,7 +208,7 @@ create_end_record(int outfd, zio_cksum_t *zc)
 }
 
 static int
-process_gzip_file(const char *filename, const char *dataset_name, int outfd)
+process_gzip_file(const char *filename, const char *dataset_name, int outfd, boolean_t verbose)
 {
 	FILE *infile;
 	struct stat st;
@@ -251,10 +283,41 @@ process_gzip_file(const char *filename, const char *dataset_name, int outfd)
 		err(1, "cannot allocate %zu bytes for gzip data", file_size);
 	}
 
-	if (fread(gzip_data, file_size, 1, infile) != 1) {
-		free(gzip_data);
-		fclose(infile);
-		err(1, "cannot read %zu bytes from gzip file %s", file_size, filename);
+	/* Read file with progress reporting for large files */
+	if (file_size > PROGRESS_THRESHOLD && verbose) {
+		size_t bytes_read = 0;
+		size_t chunk_size = 64 * 1024; /* 64KB chunks */
+		char *ptr = (char *)gzip_data;
+		
+		while (bytes_read < file_size) {
+			size_t to_read = (file_size - bytes_read > chunk_size) ? 
+			    chunk_size : (file_size - bytes_read);
+			size_t actually_read = fread(ptr, 1, to_read, infile);
+			
+			if (actually_read == 0) {
+				if (feof(infile)) {
+					free(gzip_data);
+					fclose(infile);
+					err(1, "unexpected end of file while reading %s", filename);
+				} else {
+					free(gzip_data);
+					fclose(infile);
+					err(1, "error reading from %s", filename);
+				}
+			}
+			
+			bytes_read += actually_read;
+			ptr += actually_read;
+			show_progress(filename, bytes_read, file_size);
+		}
+		clear_progress();
+	} else {
+		/* For small files, read all at once */
+		if (fread(gzip_data, file_size, 1, infile) != 1) {
+			free(gzip_data);
+			fclose(infile);
+			err(1, "cannot read %zu bytes from gzip file %s", file_size, filename);
+		}
 	}
 	
 	if (fclose(infile) != 0) {
@@ -264,6 +327,11 @@ process_gzip_file(const char *filename, const char *dataset_name, int outfd)
 
 	/* Initialize checksum */
 	memset(&zc, 0, sizeof (zc));
+
+	if (verbose) {
+		fprintf(stderr, "Creating ZFS stream for dataset '%s'\n", dataset_name);
+		fprintf(stderr, "File size: %zu bytes\n", file_size);
+	}
 
 	/* Create ZFS stream */
 	if ((ret = create_begin_record(dataset_name, outfd, &zc)) != 0) {
@@ -288,6 +356,10 @@ process_gzip_file(const char *filename, const char *dataset_name, int outfd)
 		err(1, "failed to write end record");
 	}
 
+	if (verbose) {
+		fprintf(stderr, "ZFS stream created successfully\n");
+	}
+
 	free(gzip_data);
 	return (0);
 }
@@ -297,12 +369,16 @@ zstream_do_import(int argc, char *argv[])
 {
 	char *filename = NULL;
 	const char *dataset_name = "imported_gzip";
+	boolean_t verbose = B_FALSE;
 	int c;
 
-	while ((c = getopt(argc, argv, "d:")) != -1) {
+	while ((c = getopt(argc, argv, "d:v")) != -1) {
 		switch (c) {
 		case 'd':
 			dataset_name = optarg;
+			break;
+		case 'v':
+			verbose = B_TRUE;
 			break;
 		case '?':
 			(void) fprintf(stderr, "invalid option '%c'\n",
@@ -340,5 +416,5 @@ zstream_do_import(int argc, char *argv[])
 		zstream_usage();
 	}
 
-	return (process_gzip_file(filename, dataset_name, STDOUT_FILENO));
+	return (process_gzip_file(filename, dataset_name, STDOUT_FILENO, verbose));
 }

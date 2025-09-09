@@ -49,7 +49,7 @@ zstream_usage(void)
 	    "\n"
 	    "\tzstream redup [-v] FILE | ...\n"
 	    "\n"
-	    "\tzstream import [-d dataset] FILE.gz\n");
+	    "\tzstream import [-d dataset] [-v] FILE.gz\n");
 	exit(1);
 }
 
