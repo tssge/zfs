@@ -6162,6 +6162,10 @@ vdev_prop_set(vdev_t *vd, nvlist_t *innvl, nvlist_t *outnvl)
 				error = EINVAL;
 				break;
 			}
+			if (intval > 255) {
+				error = EINVAL;
+				break;
+			}
 			vd->vdev_alloc_priority = intval;
 			break;
 		default:
