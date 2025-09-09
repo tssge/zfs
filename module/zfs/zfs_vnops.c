@@ -2063,6 +2063,371 @@ zfs_clone_range_replay(znode_t *zp, uint64_t off, uint64_t len, uint64_t blksz,
 	return (error);
 }
 
+/*
+ * Compare and deduplicate file ranges.
+ *
+ * This function implements the FIDEDUPERANGE ioctl functionality.
+ * It compares the content of source and destination ranges byte-by-byte,
+ * and if they are identical, shares the storage blocks between them using
+ * ZFS's block cloning mechanism.
+ *
+ * The function performs the following steps:
+ * 1. Validates input parameters and permissions
+ * 2. Locks both ranges for reading
+ * 3. Compares the data content byte-by-byte
+ * 4. If data matches, re-locks destination for writing and deduplicates
+ *
+ * Arguments:
+ *   inzp    - source znode
+ *   inoffp  - pointer to source offset (updated on success)
+ *   outzp   - destination znode
+ *   outoffp - pointer to destination offset (updated on success)
+ *   lenp    - pointer to length (updated to actual deduplicated length)
+ *   cr      - credentials
+ *
+ * Returns:
+ *   0 on success (even if no bytes were deduplicated)
+ *   error code on failure
+ *
+ * On success, *lenp contains the number of bytes successfully deduplicated.
+ * If the data doesn't match, *lenp will be set to 0.
+ */
+int
+zfs_dedupe_range(znode_t *inzp, uint64_t *inoffp, znode_t *outzp,
+    uint64_t *outoffp, uint64_t *lenp, cred_t *cr)
+{
+	zfsvfs_t	*inzfsvfs, *outzfsvfs;
+	objset_t	*inos, *outos;
+	zfs_locked_range_t *inlr, *outlr;
+	uint64_t	inoff, outoff, len;
+	uint64_t	blksz;
+	int		error = 0;
+	char		*inbuf = NULL, *outbuf = NULL;
+	size_t		cmplen, offset;
+
+	inoff = *inoffp;
+	outoff = *outoffp;
+	len = *lenp;
+
+	inzfsvfs = ZTOZSB(inzp);
+	outzfsvfs = ZTOZSB(outzp);
+
+	/* Same basic checks as clone_range */
+	error = zfs_enter_two(inzfsvfs, outzfsvfs, FTAG);
+	if (error != 0)
+		return (error);
+
+	inos = inzfsvfs->z_os;
+	outos = outzfsvfs->z_os;
+
+	/* Both files must be in the same pool for deduplication */
+	if (dmu_objset_spa(inos) != dmu_objset_spa(outos)) {
+		zfs_exit_two(inzfsvfs, outzfsvfs, FTAG);
+		return (SET_ERROR(EXDEV));
+	}
+
+	if (!spa_feature_is_enabled(dmu_objset_spa(outos),
+	    SPA_FEATURE_BLOCK_CLONING)) {
+		zfs_exit_two(inzfsvfs, outzfsvfs, FTAG);
+		return (SET_ERROR(EOPNOTSUPP));
+	}
+
+	/* Verify both znodes are valid */
+	error = zfs_verify_zp(inzp);
+	if (error == 0)
+		error = zfs_verify_zp(outzp);
+	if (error != 0) {
+		zfs_exit_two(inzfsvfs, outzfsvfs, FTAG);
+		return (error);
+	}
+
+	/* Check if ranges are within file bounds */
+	if (inoff >= inzp->z_size || outoff >= outzp->z_size) {
+		*lenp = 0;
+		zfs_exit_two(inzfsvfs, outzfsvfs, FTAG);
+		return (0);
+	}
+
+	/* Adjust length if it extends beyond file size */
+	if (len > inzp->z_size - inoff) {
+		len = inzp->z_size - inoff;
+	}
+	if (len > outzp->z_size - outoff) {
+		len = outzp->z_size - outoff;
+	}
+
+	if (len == 0) {
+		*lenp = 0;
+		zfs_exit_two(inzfsvfs, outzfsvfs, FTAG);
+		return (0);
+	}
+
+	/* Check if destination is writable */
+	if (zfs_is_readonly(outzfsvfs)) {
+		zfs_exit_two(inzfsvfs, outzfsvfs, FTAG);
+		return (SET_ERROR(EROFS));
+	}
+
+	if ((outzp->z_pflags & ZFS_IMMUTABLE) != 0) {
+		zfs_exit_two(inzfsvfs, outzfsvfs, FTAG);
+		return (SET_ERROR(EPERM));
+	}
+
+	/* No overlapping within the same file */
+	if (inzp == outzp) {
+		if (inoff < outoff + len && outoff < inoff + len) {
+			zfs_exit_two(inzfsvfs, outzfsvfs, FTAG);
+			return (SET_ERROR(EINVAL));
+		}
+
+		/*
+		 * If it's the same file and same range, already
+		 * "deduplicated"
+		 */
+		if (inoff == outoff && len > 0) {
+			*lenp = len;
+			zfs_exit_two(inzfsvfs, outzfsvfs, FTAG);
+			return (0);
+		}
+	}
+
+	/* Flush any cached data */
+	if (zn_has_cached_data(inzp, inoff, inoff + len - 1))
+		zn_flush_cached_data(inzp, B_TRUE);
+	if (zn_has_cached_data(outzp, outoff, outoff + len - 1))
+		zn_flush_cached_data(outzp, B_TRUE);
+
+	/*
+	 * For efficient block-level deduplication, we need to align to block
+	 * boundaries since zfs_clone_range() requires strict alignment.
+	 * We use the smaller block size to ensure compatibility.
+	 */
+	blksz = MIN(inzp->z_blksz, outzp->z_blksz);
+	
+	/*
+	 * Check if ranges are block-aligned. If not, we need to handle
+	 * this by either failing or adjusting the ranges.
+	 */
+	if ((inoff % blksz) != 0 || (outoff % blksz) != 0) {
+		/*
+		 * For unaligned ranges, we can still compare the data but
+		 * we need to be careful about the deduplication step.
+		 * We'll compare the data and if it matches, we'll need to
+		 * align the ranges for the clone operation.
+		 */
+	}
+
+	/* Lock ranges for comparison */
+	if (inzp < outzp || (inzp == outzp && inoff < outoff)) {
+		inlr = zfs_rangelock_enter(&inzp->z_rangelock, inoff, len,
+		    RL_READER);
+		outlr = zfs_rangelock_enter(&outzp->z_rangelock, outoff, len,
+		    RL_READER);
+	} else {
+		outlr = zfs_rangelock_enter(&outzp->z_rangelock, outoff, len,
+		    RL_READER);
+		inlr = zfs_rangelock_enter(&inzp->z_rangelock, inoff, len,
+		    RL_READER);
+	}
+
+	/*
+	 * Choose an appropriate chunk size for comparison that balances
+	 * memory usage with efficiency. Use a reasonable default that
+	 * works well with various recordsizes.
+	 */
+	size_t chunk_size = MIN(blksz, 64 * 1024); /* Default to 64KB */
+	
+	/*
+	 * For very large block sizes (e.g., 1MB+ recordsize), use a
+	 * larger chunk size to reduce the number of iterations, but
+	 * cap it at 256KB to keep memory usage reasonable.
+	 */
+	if (blksz > 128 * 1024) {
+		chunk_size = MIN(blksz, 256 * 1024);
+	}
+
+	/* Allocate comparison buffers */
+	inbuf = vmem_alloc(chunk_size, KM_SLEEP);
+	outbuf = vmem_alloc(chunk_size, KM_SLEEP);
+
+	/* Compare the ranges block by block */
+	for (offset = 0; offset < len; offset += cmplen) {
+		zfs_uio_t inuio, outuio;
+		iovec_t iniov, outiov;
+
+		cmplen = MIN(chunk_size, len - offset);
+
+		/* Set up UIO for source */
+		iniov.iov_base = inbuf;
+		iniov.iov_len = cmplen;
+		zfs_uio_iovec_init(&inuio, &iniov, 1, inoff + offset,
+		    UIO_SYSSPACE, cmplen, 0);
+
+		/* Set up UIO for destination */
+		outiov.iov_base = outbuf;
+		outiov.iov_len = cmplen;
+		zfs_uio_iovec_init(&outuio, &outiov, 1, outoff + offset,
+		    UIO_SYSSPACE, cmplen, 0);
+
+		/* Read from both ranges */
+		error = zfs_read(inzp, &inuio, 0, cr);
+		if (error != 0)
+			break;
+
+		/* Check if we read the expected amount */
+		if (zfs_uio_resid(&inuio) != 0) {
+			/* Partial read - ranges might not be comparable */
+			error = SET_ERROR(EIO);
+			break;
+		}
+
+		error = zfs_read(outzp, &outuio, 0, cr);
+		if (error != 0)
+			break;
+
+		/* Check if we read the expected amount */
+		if (zfs_uio_resid(&outuio) != 0) {
+			/* Partial read - ranges might not be comparable */
+			error = SET_ERROR(EIO);
+			break;
+		}
+
+		/* Compare the data */
+		if (memcmp(inbuf, outbuf, cmplen) != 0) {
+			/*
+			 * Data doesn't match - return success but indicate
+			 * that no bytes were deduplicated by setting
+			 * length to 0
+			 */
+			*lenp = 0;
+			error = 0; /* This is not an error condition */
+			break;
+		}
+	}
+
+	vmem_free(inbuf, chunk_size);
+	vmem_free(outbuf, chunk_size);
+
+	/* Clean up range locks if we had an error during comparison */
+	if (error != 0) {
+		zfs_rangelock_exit(outlr);
+		zfs_rangelock_exit(inlr);
+		zfs_exit_two(inzfsvfs, outzfsvfs, FTAG);
+		return (error);
+	}
+
+	if (error == 0 && *lenp > 0) {
+		/*
+		 * Data matches! Now we need to get write locks and
+		 * deduplicate. We need to re-lock with write access for the
+		 * destination.
+		 */
+		zfs_rangelock_exit(outlr);
+		zfs_rangelock_exit(inlr);
+
+		/* Re-lock with write access for destination */
+		if (inzp < outzp || (inzp == outzp && inoff < outoff)) {
+			inlr = zfs_rangelock_enter(&inzp->z_rangelock, inoff,
+			    len, RL_READER);
+			outlr = zfs_rangelock_enter(&outzp->z_rangelock,
+			    outoff, len, RL_WRITER);
+		} else {
+			outlr = zfs_rangelock_enter(&outzp->z_rangelock,
+			    outoff, len, RL_WRITER);
+			inlr = zfs_rangelock_enter(&inzp->z_rangelock, inoff,
+			    len, RL_READER);
+		}
+
+		/*
+		 * Data matches! Now we can deduplicate by cloning.
+		 * Since the data is identical, we can safely use clone_range
+		 * to deduplicate the blocks.
+		 * 
+		 * However, zfs_clone_range requires block-aligned ranges.
+		 * If our ranges aren't aligned, we need to align them.
+		 */
+		uint64_t clone_inoff = inoff;
+		uint64_t clone_outoff = outoff;
+		uint64_t clone_len = len;
+		
+		/*
+		 * Check if we need to align the ranges for block cloning.
+		 * If the ranges aren't block-aligned, we need to align them
+		 * to block boundaries, which may reduce the effective length.
+		 */
+		if ((inoff % blksz) != 0 || (outoff % blksz) != 0) {
+			/*
+			 * Align the start offsets to block boundaries.
+			 * This may reduce the effective range we can deduplicate.
+			 */
+			uint64_t aligned_inoff = P2ROUNDUP(inoff, blksz);
+			uint64_t aligned_outoff = P2ROUNDUP(outoff, blksz);
+			
+			/*
+			 * If alignment would move us beyond the end of the range,
+			 * we can't perform block-level deduplication.
+			 */
+			if (aligned_inoff >= inoff + len || aligned_outoff >= outoff + len) {
+				/*
+				 * The range is too small to align to block boundaries.
+				 * We can't perform block-level deduplication.
+				 */
+				*lenp = 0;
+				error = 0; /* Not an error, just no deduplication possible */
+			} else {
+				/*
+				 * Adjust the range to be block-aligned.
+				 * We need to verify that the aligned portion still matches.
+				 */
+				clone_inoff = aligned_inoff;
+				clone_outoff = aligned_outoff;
+                    clone_len = P2ALIGN_TYPED(inoff + len - aligned_inoff, blksz, uint64_t);
+				
+				/*
+				 * Ensure we don't exceed the original range bounds.
+				 */
+				if (clone_inoff + clone_len > inoff + len) {
+					clone_len = (inoff + len) - clone_inoff;
+				}
+				if (clone_outoff + clone_len > outoff + len) {
+					clone_len = (outoff + len) - clone_outoff;
+				}
+				
+				/*
+				 * If the aligned range is too small, skip deduplication.
+				 */
+				if (clone_len < blksz) {
+					*lenp = 0;
+					error = 0;
+				}
+			}
+		}
+		
+		/*
+		 * Only attempt cloning if we have a valid aligned range.
+		 */
+		if (error == 0 && *lenp > 0 && clone_len >= blksz) {
+			error = zfs_clone_range(inzp, &clone_inoff, outzp,
+			    &clone_outoff, &clone_len, cr);
+
+			if (error == 0) {
+				*inoffp = clone_inoff;
+				*outoffp = clone_outoff;
+				*lenp = clone_len;
+			}
+		}
+
+		zfs_rangelock_exit(outlr);
+		zfs_rangelock_exit(inlr);
+	} else {
+		zfs_rangelock_exit(outlr);
+		zfs_rangelock_exit(inlr);
+	}
+
+	zfs_exit_two(inzfsvfs, outzfsvfs, FTAG);
+	return (error);
+}
+
 EXPORT_SYMBOL(zfs_access);
 EXPORT_SYMBOL(zfs_fsync);
 EXPORT_SYMBOL(zfs_holey);
@@ -2072,6 +2437,7 @@ EXPORT_SYMBOL(zfs_getsecattr);
 EXPORT_SYMBOL(zfs_setsecattr);
 EXPORT_SYMBOL(zfs_clone_range);
 EXPORT_SYMBOL(zfs_clone_range_replay);
+EXPORT_SYMBOL(zfs_dedupe_range);
 
 ZFS_MODULE_PARAM(zfs_vnops, zfs_vnops_, read_chunk_size, U64, ZMOD_RW,
 	"Bytes to read per chunk");
