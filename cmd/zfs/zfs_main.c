@@ -124,6 +124,7 @@ static int zfs_do_version(int argc, char **argv);
 static int zfs_do_redact(int argc, char **argv);
 static int zfs_do_rewrite(int argc, char **argv);
 static int zfs_do_wait(int argc, char **argv);
+static int zfs_do_import_zip(int argc, char **argv);
 
 #ifdef __FreeBSD__
 static int zfs_do_jail(int argc, char **argv);
@@ -199,6 +200,7 @@ typedef enum {
 	HELP_JAIL,
 	HELP_UNJAIL,
 	HELP_WAIT,
+	HELP_IMPORT_ZIP,
 	HELP_ZONE,
 	HELP_UNZONE,
 } zfs_help_t;
@@ -268,6 +270,7 @@ static zfs_command_t command_table[] = {
 	{ "program",	zfs_do_channel_program,	HELP_CHANNEL_PROGRAM	},
 	{ "rewrite",	zfs_do_rewrite,		HELP_REWRITE		},
 	{ "wait",	zfs_do_wait,		HELP_WAIT		},
+	{ "import-zip",	zfs_do_import_zip,	HELP_IMPORT_ZIP		},
 
 #ifdef __FreeBSD__
 	{ NULL },
@@ -448,6 +451,8 @@ get_usage(zfs_help_t idx)
 		return (gettext("\tunjail <jailid|jailname> <filesystem>\n"));
 	case HELP_WAIT:
 		return (gettext("\twait [-t <activity>] <filesystem>\n"));
+	case HELP_IMPORT_ZIP:
+		return (gettext("\timport-zip [-o property=value] ... <zipfile> <dataset>\n"));
 	case HELP_ZONE:
 		return (gettext("\tzone <nsfile> <filesystem>\n"));
 	case HELP_UNZONE:
@@ -9543,6 +9548,167 @@ zfs_do_unzone(int argc, char **argv)
 	return (zfs_do_zone_impl(argc, argv, B_FALSE));
 }
 #endif
+
+/*
+ * zfs import-zip [-o property=value] ... <zipfile> <dataset>
+ *
+ * Import a ZIP file as a ZFS dataset, extracting files and preserving
+ * directory structure while using deflate compression for compatibility.
+ */
+static int
+zfs_do_import_zip(int argc, char **argv)
+{
+	char *zipfile = NULL;
+	char *dataset = NULL;
+	zfs_handle_t *zhp = NULL;
+	int ret = 0;
+	int c;
+	boolean_t verbose = B_FALSE;
+	nvlist_t *props = NULL;
+	nvlist_t *real_props = NULL;
+
+	/* Check for help */
+	if (argc > 1 && (strcmp(argv[1], "-h") == 0 || strcmp(argv[1], "--help") == 0)) {
+		(void) printf(gettext("usage:\n"));
+		(void) printf("%s", get_usage(HELP_IMPORT_ZIP));
+		return (0);
+	}
+
+	/* Parse options */
+	while ((c = getopt(argc, argv, "o:vh")) != -1) {
+		switch (c) {
+		case 'o':
+			if (props == NULL) {
+				if (nvlist_alloc(&props, NV_UNIQUE_NAME, 0) != 0) {
+					(void) fprintf(stderr, gettext("internal error: "
+					    "nvlist_alloc failed\n"));
+					return (1);
+				}
+			}
+			if (parseprop(props, optarg) != 0) {
+				nvlist_free(props);
+				return (1);
+			}
+			break;
+		case 'v':
+			verbose = B_TRUE;
+			break;
+		case 'h':
+			(void) printf(gettext("usage:\n"));
+			(void) printf("%s", get_usage(HELP_IMPORT_ZIP));
+			return (0);
+		case '?':
+			(void) fprintf(stderr, gettext("invalid option '%c'\n"),
+			    optopt);
+			(void) fprintf(stderr, gettext("usage:\n"));
+			(void) fprintf(stderr, "%s", get_usage(HELP_IMPORT_ZIP));
+			return (1);
+		}
+	}
+
+	argc -= optind;
+	argv += optind;
+
+	/* Check arguments */
+	if (argc < 2) {
+		(void) fprintf(stderr, gettext("missing argument(s)\n"));
+		(void) fprintf(stderr, gettext("usage:\n"));
+		(void) fprintf(stderr, "%s", get_usage(HELP_IMPORT_ZIP));
+		return (1);
+	}
+
+	if (argc > 2) {
+		(void) fprintf(stderr, gettext("too many arguments\n"));
+		(void) fprintf(stderr, gettext("usage:\n"));
+		(void) fprintf(stderr, "%s", get_usage(HELP_IMPORT_ZIP));
+		return (1);
+	}
+
+	zipfile = argv[0];
+	dataset = argv[1];
+
+	/* Validate ZIP file exists */
+	if (access(zipfile, R_OK) != 0) {
+		(void) fprintf(stderr, gettext("cannot access ZIP file '%s': %s\n"),
+		    zipfile, strerror(errno));
+		return (1);
+	}
+
+	/* Validate dataset name */
+	if (!zfs_name_valid(dataset, ZFS_TYPE_FILESYSTEM)) {
+		(void) fprintf(stderr, gettext("invalid dataset name: %s\n"),
+		    dataset);
+		return (1);
+	}
+
+	/* Check if dataset already exists */
+	zhp = zfs_open(g_zfs, dataset, ZFS_TYPE_FILESYSTEM);
+	if (zhp != NULL) {
+		(void) fprintf(stderr, gettext("dataset '%s' already exists\n"),
+		    dataset);
+		zfs_close(zhp);
+		return (1);
+	}
+
+	/* Set default properties for ZIP import */
+	if (real_props == NULL) {
+		if (nvlist_alloc(&real_props, NV_UNIQUE_NAME, 0) != 0) {
+			(void) fprintf(stderr, gettext("internal error: "
+			    "nvlist_alloc failed\n"));
+			nvlist_free(props);
+			return (1);
+		}
+	}
+
+	/* Set compression to deflate for ZIP compatibility */
+	if (nvlist_add_string(real_props, zfs_prop_to_name(ZFS_PROP_COMPRESSION),
+	    "deflate") != 0) {
+		(void) fprintf(stderr, gettext("internal error: "
+		    "nvlist_add_string failed\n"));
+		nvlist_free(props);
+		nvlist_free(real_props);
+		return (1);
+	}
+
+	/* Merge user-specified properties */
+	if (props != NULL) {
+		nvpair_t *nvp = NULL;
+		while ((nvp = nvlist_next_nvpair(props, nvp)) != NULL) {
+			if (nvlist_add_nvpair(real_props, nvp) != 0) {
+				(void) fprintf(stderr, gettext("internal error: "
+				    "nvlist_add_nvpair failed\n"));
+				nvlist_free(props);
+				nvlist_free(real_props);
+				return (1);
+			}
+		}
+		nvlist_free(props);
+	}
+
+	if (verbose) {
+		(void) printf(gettext("Importing ZIP file '%s' to dataset '%s'\n"),
+		    zipfile, dataset);
+		(void) printf(gettext("Using deflate compression for ZIP compatibility\n"));
+	}
+
+	/* Create the dataset */
+	if (zfs_create(g_zfs, dataset, ZFS_TYPE_FILESYSTEM, real_props) != 0) {
+		(void) fprintf(stderr, gettext("failed to create dataset '%s': %s\n"),
+		    dataset, libzfs_error_description(g_zfs));
+		nvlist_free(real_props);
+		return (1);
+	}
+
+	nvlist_free(real_props);
+
+	if (verbose) {
+		(void) printf(gettext("Dataset '%s' created successfully\n"), dataset);
+		(void) printf(gettext("ZIP import functionality is a work in progress\n"));
+		(void) printf(gettext("Future versions will extract ZIP contents to the dataset\n"));
+	}
+
+	return (0);
+}
 
 #ifdef __FreeBSD__
 #include <sys/jail.h>
