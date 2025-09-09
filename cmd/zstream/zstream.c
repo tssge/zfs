@@ -47,7 +47,9 @@ zstream_usage(void)
 	    "\n"
 	    "\tzstream token resume_token\n"
 	    "\n"
-	    "\tzstream redup [-v] FILE | ...\n");
+	    "\tzstream redup [-v] FILE | ...\n"
+	    "\n"
+	    "\tzstream import [-d dataset] [-v] [-l level] FILE.gz\n");
 	exit(1);
 }
 
@@ -74,6 +76,8 @@ main(int argc, char *argv[])
 		return (zstream_do_token(argc - 1, argv + 1));
 	} else if (strcmp(subcommand, "redup") == 0) {
 		return (zstream_do_redup(argc - 1, argv + 1));
+	} else if (strcmp(subcommand, "import") == 0) {
+		return (zstream_do_import(argc - 1, argv + 1));
 	} else {
 		zstream_usage();
 	}

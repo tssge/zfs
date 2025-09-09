@@ -48,6 +48,12 @@
 .Cm recompress
 .Op Fl l Ar level
 .Ar algorithm
+.Nm
+.Cm import
+.Op Fl d Ar dataset
+.Op Fl v
+.Op Fl l Ar level
+.Ar file.gz
 .
 .Sh DESCRIPTION
 The
@@ -175,9 +181,45 @@ Only needed for algorithms where the level is not implied as part of the name
 of the algorithm (e.g. gzip-3 does not require it, while zstd does, if a
 non-default level is desired).
 .El
+.It Xo
+.Nm
+.Cm import
+.Op Fl d Ar dataset
+.Op Fl v
+.Op Fl l Ar level
+.Ar file.gz
+.Xc
+Import a gzip file as a ZFS stream, preserving the gzip compression.
+The gzipped data is imported as-is without decompression and recompression.
+This allows for efficient import of gzipped files into ZFS datasets while
+maintaining the original compression.
+.Bl -tag -width "-d"
+.It Fl d Ar dataset
+Specifies the dataset name to use in the generated stream.
+Defaults to
+.Sy imported_gzip
+if not specified.
+.It Fl v
+Verbose mode.
+Shows progress information for large files during processing.
+.It Fl l Ar level
+Specifies the gzip compression level to use in the ZFS stream.
+Must be between 1 and 9, where 1 is fastest compression and 9 is best compression.
+Defaults to 6 if not specified.
+.El
 .El
 .
 .Sh EXAMPLES
+Import a gzip file as a ZFS dataset while preserving compression:
+.Bd -literal
+# Nm zstream import Fl d Ar pool/dataset Ar file.gz | Nm zfs recv Ar pool/dataset
+.Ed
+.Pp
+Import with verbose output and custom compression level:
+.Bd -literal
+# Nm zstream import Fl v Fl l Ar 9 Fl d Ar pool/dataset Ar file.gz | Nm zfs recv Ar pool/dataset
+.Ed
+.Pp
 Heal a dataset that was corrupted due to OpenZFS bug #12762.
 First, determine which records are corrupt.
 That cannot be done automatically; it requires information beyond ZFS's
