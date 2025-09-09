@@ -2373,7 +2373,7 @@ zfs_dedupe_range(znode_t *inzp, uint64_t *inoffp, znode_t *outzp,
 				 */
 				clone_inoff = aligned_inoff;
 				clone_outoff = aligned_outoff;
-				clone_len = P2ALIGN(inoff + len - aligned_inoff, blksz);
+                    clone_len = P2ALIGN_TYPED(inoff + len - aligned_inoff, blksz, uint64_t);
 				
 				/*
 				 * Ensure we don't exceed the original range bounds.
