@@ -1,0 +1,92 @@
+name: copilot-setup
+
+on:
+  workflow_dispatch:
+    inputs:
+      validate_build:
+        description: 'Run full build validation'
+        required: false
+        default: true
+        type: boolean
+  workflow_call:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  copilot-setup:
+    name: Setup Copilot Environment
+    runs-on: ubuntu-22.04
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        ref: ${{ github.event.pull_request.head.sha }}
+
+    - name: Update package lists
+      run: |
+        sudo apt-get update
+
+    - name: Install core build dependencies
+      run: |
+        sudo apt-get install -y \
+          build-essential autoconf automake libtool git alien fakeroot gawk \
+          uuid-dev libuuid1 libblkid-dev libssl-dev zlib1g-dev libaio-dev \
+          libattr1-dev libelf-dev python3-dev python3-setuptools python3-cffi \
+          libffi-dev python3-packaging dkms libtirpc-dev linux-headers-$(uname -r)
+
+    - name: Install code quality tools
+      run: |
+        sudo apt-get install -y cppcheck shellcheck devscripts mandoc python3-flake8
+        sudo python -m pip install --quiet flake8
+
+    - name: Verify tools are available
+      run: |
+        echo "Verifying installed tools:"
+        autoconf --version | head -1
+        automake --version | head -1
+        libtool --version | head -1
+        cppcheck --version
+        shellcheck --version
+        flake8 --version
+        python3 --version
+        gcc --version | head -1
+
+    - name: Generate configure script
+      run: |
+        echo "Running autogen.sh (takes ~15 seconds)"
+        ./autogen.sh
+
+    - name: Configure build system
+      if: ${{ github.event.inputs.validate_build != 'false' }}
+      run: |
+        echo "Running configure (takes ~70 seconds)"
+        ./configure
+
+    - name: Build ZFS
+      if: ${{ github.event.inputs.validate_build != 'false' }}
+      timeout-minutes: 10
+      run: |
+        echo "Building ZFS (takes ~4 minutes)"
+        make -j$(nproc) --no-print-directory --silent
+
+    - name: Run checkstyle validation
+      if: ${{ github.event.inputs.validate_build != 'false' }}
+      run: |
+        echo "Running checkstyle validation"
+        make checkstyle
+
+    - name: Environment summary
+      run: |
+        echo "## Copilot Environment Setup Complete"
+        echo "- ✅ All dependencies installed"
+        echo "- ✅ Build tools configured"
+        echo "- ✅ Code quality tools available"
+        if [[ "${{ github.event.inputs.validate_build }}" != "false" ]]; then
+          echo "- ✅ Build validation completed"
+          echo "- ✅ Checkstyle validation passed"
+        else
+          echo "- ⏭️ Build validation skipped"
+        fi
+        echo ""
+        echo "Ready for Copilot development work!"
