@@ -65,6 +65,7 @@ COMMON_H = \
 	sys/dsl_userhold.h \
 	sys/edonr.h \
 	sys/efi_partition.h \
+	sys/fiemap.h \
 	sys/frame.h \
 	sys/hkdf.h \
 	sys/metaslab.h \
