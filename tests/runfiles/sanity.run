@@ -40,6 +40,10 @@ tests = ['alloc_class_003_pos', 'alloc_class_004_pos', 'alloc_class_005_pos',
     'alloc_class_011_neg']
 tags = ['functional', 'alloc_class']
 
+[tests/functional/alloc_priority]
+tests = ['alloc_priority_001_pos', 'alloc_priority_002_neg']
+tags = ['functional', 'alloc_priority']
+
 [tests/functional/arc]
 tests = ['dbufstats_001_pos', 'dbufstats_002_pos', 'arcstats_runtime_tuning']
 tags = ['functional', 'arc']

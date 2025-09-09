@@ -40,6 +40,11 @@ tests = ['alloc_class_001_pos', 'alloc_class_002_neg', 'alloc_class_003_pos',
     'alloc_class_013_pos', 'alloc_class_016_pos']
 tags = ['functional', 'alloc_class']
 
+[tests/functional/alloc_priority]
+tests = ['alloc_priority_001_pos', 'alloc_priority_002_neg', 'alloc_priority_003_pos',
+    'alloc_priority_004_pos', 'alloc_priority_005_pos']
+tags = ['functional', 'alloc_priority']
+
 [tests/functional/append]
 tests = ['file_append', 'threadsappend_001_pos']
 tags = ['functional', 'append']
