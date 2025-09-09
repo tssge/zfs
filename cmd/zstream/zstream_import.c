@@ -186,6 +186,11 @@ process_gzip_file(const char *filename, const char *dataset_name, int outfd)
 	int ret = 0;
 	gzip_header_t header;
 
+	/* Validate input parameters */
+	if (filename == NULL || dataset_name == NULL) {
+		err(1, "invalid parameters");
+	}
+
 	/* Open and read the gzip file */
 	infile = fopen(filename, "rb");
 	if (infile == NULL) {
@@ -193,9 +198,23 @@ process_gzip_file(const char *filename, const char *dataset_name, int outfd)
 	}
 
 	if (stat(filename, &st) != 0) {
+		fclose(infile);
 		err(1, "cannot stat %s", filename);
 	}
 	file_size = st.st_size;
+
+	/* Check for empty files */
+	if (file_size == 0) {
+		fclose(infile);
+		err(1, "%s is empty", filename);
+	}
+
+	/* Check for unreasonably large files (> 1GB) */
+	if (file_size > 1024 * 1024 * 1024) {
+		fclose(infile);
+		err(1, "%s is too large (%zu bytes), maximum supported size is 1GB", 
+		    filename, file_size);
+	}
 
 	/* Read and validate gzip header */
 	if (fread(&header, sizeof (header), 1, infile) != 1) {
@@ -205,29 +224,43 @@ process_gzip_file(const char *filename, const char *dataset_name, int outfd)
 
 	if (header.magic1 != GZIP_MAGIC1 || header.magic2 != GZIP_MAGIC2) {
 		fclose(infile);
-		err(1, "%s is not a valid gzip file", filename);
+		err(1, "%s is not a valid gzip file (invalid magic bytes)", filename);
 	}
 
 	if (header.method != GZIP_METHOD_DEFLATE) {
 		fclose(infile);
-		err(1, "%s uses unsupported compression method", filename);
+		err(1, "%s uses unsupported compression method (%d), only deflate (8) is supported", 
+		    filename, header.method);
+	}
+
+	/* Check for minimum file size (gzip header + trailer) */
+	if (file_size < sizeof (gzip_header_t) + 8) {
+		fclose(infile);
+		err(1, "%s is too small to be a valid gzip file", filename);
 	}
 
 	/* Reset file position and read entire file */
-	fseek(infile, 0, SEEK_SET);
+	if (fseek(infile, 0, SEEK_SET) != 0) {
+		fclose(infile);
+		err(1, "cannot seek to beginning of %s", filename);
+	}
 
 	gzip_data = malloc(file_size);
 	if (gzip_data == NULL) {
 		fclose(infile);
-		err(1, "cannot allocate memory for gzip data");
+		err(1, "cannot allocate %zu bytes for gzip data", file_size);
 	}
 
 	if (fread(gzip_data, file_size, 1, infile) != 1) {
 		free(gzip_data);
 		fclose(infile);
-		err(1, "cannot read gzip file %s", filename);
+		err(1, "cannot read %zu bytes from gzip file %s", file_size, filename);
 	}
-	fclose(infile);
+	
+	if (fclose(infile) != 0) {
+		free(gzip_data);
+		err(1, "error closing %s", filename);
+	}
 
 	/* Initialize checksum */
 	memset(&zc, 0, sizeof (zc));
@@ -288,6 +321,24 @@ zstream_do_import(int argc, char *argv[])
 	}
 
 	filename = argv[0];
+
+	/* Validate dataset name */
+	if (strlen(dataset_name) == 0) {
+		(void) fprintf(stderr, "dataset name cannot be empty\n");
+		zstream_usage();
+	}
+
+	if (strlen(dataset_name) >= MAXNAMELEN) {
+		(void) fprintf(stderr, "dataset name too long (max %d characters)\n",
+		    MAXNAMELEN - 1);
+		zstream_usage();
+	}
+
+	/* Basic validation of dataset name format */
+	if (strchr(dataset_name, '@') != NULL || strchr(dataset_name, '#') != NULL) {
+		(void) fprintf(stderr, "dataset name cannot contain '@' or '#' characters\n");
+		zstream_usage();
+	}
 
 	return (process_gzip_file(filename, dataset_name, STDOUT_FILENO));
 }
