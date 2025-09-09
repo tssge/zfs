@@ -2308,6 +2308,14 @@ zfs_dedupe_range(znode_t *inzp, uint64_t *inoffp, znode_t *outzp,
 	vmem_free(inbuf, chunk_size);
 	vmem_free(outbuf, chunk_size);
 
+	/* Clean up range locks if we had an error during comparison */
+	if (error != 0) {
+		zfs_rangelock_exit(outlr);
+		zfs_rangelock_exit(inlr);
+		zfs_exit_two(inzfsvfs, outzfsvfs, FTAG);
+		return (error);
+	}
+
 	if (error == 0 && *lenp > 0) {
 		/*
 		 * Data matches! Now we need to get write locks and
