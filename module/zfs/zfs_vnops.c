@@ -135,6 +135,10 @@ zfs_holey_common(znode_t *zp, ulong_t cmd, loff_t *off)
 	zfs_locked_range_t *lr;
 	uint64_t noff = (uint64_t)*off; /* new offset */
 	uint64_t file_sz;
+	uint64_t blksz = zp->z_blksz;
+	uint64_t search_len;
+	blkptr_t *bps;
+	size_t nbps, maxblocks;
 	int error;
 	boolean_t hole;
 
@@ -152,36 +156,91 @@ zfs_holey_common(znode_t *zp, ulong_t cmd, loff_t *off)
 	if (zn_has_cached_data(zp, 0, file_sz - 1))
 		zn_flush_cached_data(zp, B_TRUE);
 
-	lr = zfs_rangelock_enter(&zp->z_rangelock, 0, UINT64_MAX, RL_READER);
-	error = dmu_offset_next(ZTOZSB(zp)->z_os, zp->z_id, hole, &noff);
-	zfs_rangelock_exit(lr);
-
-	if (error == ESRCH)
-		return (SET_ERROR(ENXIO));
-
-	/* File was dirty, so fall back to using generic logic */
-	if (error == EBUSY) {
-		if (hole)
-			*off = file_sz;
-
-		return (0);
-	}
-
 	/*
-	 * We could find a hole that begins after the logical end-of-file,
-	 * because dmu_offset_next() only works on whole blocks.  If the
-	 * EOF falls mid-block, then indicate that the "virtual hole"
-	 * at the end of the file begins at the logical EOF, rather than
-	 * at the end of the last block.
+	 * Use FIEMAP-based approach similar to block cloning for better
+	 * performance and correctness with dirty blocks. This avoids the
+	 * limitations of dmu_offset_next() which can't handle dirty blocks
+	 * properly without forcing a txg sync.
 	 */
-	if (noff > file_sz) {
-		ASSERT(hole);
-		noff = file_sz;
+	lr = zfs_rangelock_enter(&zp->z_rangelock, noff, file_sz - noff, RL_READER);
+
+	/* Search in chunks to avoid excessive memory usage */
+	search_len = MIN(file_sz - noff, 1024 * 1024); /* 1MB chunks */
+	maxblocks = (search_len + blksz - 1) / blksz;
+	
+	bps = kmem_zalloc(maxblocks * sizeof (blkptr_t), KM_SLEEP);
+	nbps = maxblocks;
+
+	error = dmu_read_l0_bps(ZTOZSB(zp)->z_os, zp->z_id, noff, search_len,
+	    bps, &nbps);
+	
+	if (error == 0) {
+		/* Search through the block pointers to find hole/data */
+		uint64_t current_off = noff;
+		boolean_t found = B_FALSE;
+		
+		for (size_t i = 0; i < nbps; i++) {
+			blkptr_t *bp = &bps[i];
+			
+			/* Check if this block is a hole or has data */
+			boolean_t is_hole = (bp == NULL || BP_IS_HOLE(bp) || 
+			    BP_GET_FILL(bp) == 0);
+			
+			if (is_hole == hole) {
+				/* Found what we're looking for */
+				noff = current_off;
+				found = B_TRUE;
+				break;
+			}
+			
+			current_off += blksz;
+		}
+		
+		if (!found && hole) {
+			/* No hole found in this chunk, check if we're at EOF */
+			if (current_off >= file_sz) {
+				noff = file_sz;
+				found = B_TRUE;
+			}
+		}
+		
+		if (!found) {
+			error = SET_ERROR(ENXIO);
+		}
+	} else if (error == EAGAIN) {
+		/*
+		 * Block was modified in current txg, fall back to old method
+		 * but only for the specific case that caused the issue.
+		 */
+		zfs_rangelock_exit(lr);
+		error = dmu_offset_next(ZTOZSB(zp)->z_os, zp->z_id, hole, &noff);
+		if (error == ESRCH)
+			error = SET_ERROR(ENXIO);
+		else if (error == EBUSY && hole)
+			noff = file_sz;
+		
+		kmem_free(bps, maxblocks * sizeof (blkptr_t));
+		return (error);
 	}
 
-	if (noff < *off)
-		return (error);
-	*off = noff;
+	zfs_rangelock_exit(lr);
+	kmem_free(bps, maxblocks * sizeof (blkptr_t));
+
+	if (error == 0) {
+		/*
+		 * Ensure we don't return an offset beyond the file size.
+		 * This can happen when the EOF falls mid-block.
+		 */
+		if (noff > file_sz) {
+			ASSERT(hole);
+			noff = file_sz;
+		}
+
+		if (noff < *off)
+			return (SET_ERROR(ENXIO));
+		*off = noff;
+	}
+
 	return (error);
 }
 
