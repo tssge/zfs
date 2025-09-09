@@ -131,6 +131,9 @@ static int find_end_central_dir(FILE *fp, zip_end_central_dir_t *end_central_dir
 static void create_directory_path(const char *filepath);
 static int extract_stored_file(FILE *fp, zip_central_dir_entry_t *entry, const char *filepath);
 static int extract_deflate_file(FILE *fp, zip_central_dir_entry_t *entry, const char *filepath, boolean_t verbose);
+static int store_zip_metadata(const char *dataset, zip_file_metadata_t *metadata, const char *filepath);
+static int store_archive_metadata(const char *dataset, zip_end_central_dir_t *end_central_dir);
+static void free_zip_metadata(zip_file_metadata_t *metadata);
 
 #ifdef __FreeBSD__
 static int zfs_do_jail(int argc, char **argv);
@@ -9562,6 +9565,25 @@ zfs_do_unzone(int argc, char **argv)
 #define ZIP_CENTRAL_DIR_SIGNATURE	0x02014b50
 #define ZIP_END_CENTRAL_DIR_SIGNATURE	0x06054b50
 
+/*
+ * ZIP metadata storage in ZFS properties
+ * We use custom properties to store ZIP metadata for archival purposes
+ */
+#define ZIP_META_PREFIX		"com.zfs:zip:"
+#define ZIP_META_ARCHIVE	ZIP_META_PREFIX "archive"
+#define ZIP_META_FILE_PREFIX	ZIP_META_PREFIX "file:"
+#define ZIP_META_COMPRESSION	"compression_method"
+#define ZIP_META_COMPRESSED_SIZE	"compressed_size"
+#define ZIP_META_UNCOMPRESSED_SIZE	"uncompressed_size"
+#define ZIP_META_CRC32		"crc32"
+#define ZIP_META_MOD_TIME	"mod_time"
+#define ZIP_META_MOD_DATE	"mod_date"
+#define ZIP_META_EXT_ATTR	"ext_attributes"
+#define ZIP_META_INT_ATTR	"int_attributes"
+#define ZIP_META_VERSION_MADE	"version_made"
+#define ZIP_META_VERSION_NEEDED	"version_needed"
+#define ZIP_META_FLAGS		"flags"
+
 typedef struct zip_local_file_header {
 	uint32_t signature;
 	uint16_t version_needed;
@@ -9606,6 +9628,22 @@ typedef struct zip_end_central_dir {
 	uint32_t central_dir_offset;
 	uint16_t zipfile_comment_length;
 } zip_end_central_dir_t;
+
+typedef struct zip_file_metadata {
+	char *filename;
+	uint16_t compression_method;
+	uint32_t compressed_size;
+	uint32_t uncompressed_size;
+	uint32_t crc32;
+	uint16_t mod_time;
+	uint16_t mod_date;
+	uint32_t ext_attributes;
+	uint16_t int_attributes;
+	uint16_t version_made;
+	uint16_t version_needed;
+	uint16_t flags;
+	uint32_t local_header_offset;
+} zip_file_metadata_t;
 
 /*
  * Import ZIP file contents to ZFS dataset
@@ -9661,8 +9699,18 @@ import_zip_contents(const char *zipfile, const char *dataset, boolean_t verbose)
 		return (-1);
 	}
 
+	/* Store archive-level metadata */
+	if (store_archive_metadata(dataset, &end_central_dir) != 0) {
+		(void) fprintf(stderr, gettext("failed to store archive metadata\n"));
+		fclose(fp);
+		free(dataset_path);
+		return (-1);
+	}
+
 	/* Process each file in the ZIP */
 	for (i = 0; i < end_central_dir.total_central_dir_entries; i++) {
+		zip_file_metadata_t file_metadata;
+		
 		/* Read central directory entry */
 		if (fread(&central_entry, sizeof(central_entry), 1, fp) != 1) {
 			(void) fprintf(stderr, gettext("cannot read central directory entry\n"));
@@ -9736,6 +9784,30 @@ import_zip_contents(const char *zipfile, const char *dataset, boolean_t verbose)
 			(void) fprintf(stderr, gettext("unsupported compression method %d for file '%s'\n"),
 			    central_entry.compression_method, filename);
 			ret = -1;
+		}
+
+		if (ret == 0) {
+			/* Store ZIP metadata for archival purposes */
+			file_metadata.filename = strdup(filename);
+			file_metadata.compression_method = central_entry.compression_method;
+			file_metadata.compressed_size = central_entry.compressed_size;
+			file_metadata.uncompressed_size = central_entry.uncompressed_size;
+			file_metadata.crc32 = central_entry.crc32;
+			file_metadata.mod_time = central_entry.last_mod_time;
+			file_metadata.mod_date = central_entry.last_mod_date;
+			file_metadata.ext_attributes = central_entry.external_file_attributes;
+			file_metadata.int_attributes = central_entry.internal_file_attributes;
+			file_metadata.version_made = central_entry.version_made_by;
+			file_metadata.version_needed = central_entry.version_needed;
+			file_metadata.flags = central_entry.flags;
+			file_metadata.local_header_offset = central_entry.local_header_offset;
+
+			if (store_zip_metadata(dataset, &file_metadata, filepath) != 0) {
+				(void) fprintf(stderr, gettext("failed to store metadata for %s\n"), filename);
+				ret = -1;
+			}
+
+			free_zip_metadata(&file_metadata);
 		}
 
 		free(filename);
@@ -9931,6 +10003,173 @@ extract_deflate_file(FILE *fp, zip_central_dir_entry_t *entry, const char *filep
 	fclose(outfile);
 
 	return (ret);
+}
+
+/*
+ * Store ZIP file metadata in ZFS properties for archival purposes
+ */
+static int
+store_zip_metadata(const char *dataset, zip_file_metadata_t *metadata, const char *filepath)
+{
+	char prop_name[256];
+	char prop_value[64];
+	int ret = 0;
+
+	/* Store compression method */
+	(void) snprintf(prop_name, sizeof(prop_name), "%s%s:%s", 
+	    ZIP_META_FILE_PREFIX, metadata->filename, ZIP_META_COMPRESSION);
+	(void) snprintf(prop_value, sizeof(prop_value), "%u", metadata->compression_method);
+	if (zfs_prop_set(dataset, prop_name, prop_value) != 0) {
+		return (-1);
+	}
+
+	/* Store compressed size */
+	(void) snprintf(prop_name, sizeof(prop_name), "%s%s:%s", 
+	    ZIP_META_FILE_PREFIX, metadata->filename, ZIP_META_COMPRESSED_SIZE);
+	(void) snprintf(prop_value, sizeof(prop_value), "%u", metadata->compressed_size);
+	if (zfs_prop_set(dataset, prop_name, prop_value) != 0) {
+		return (-1);
+	}
+
+	/* Store uncompressed size */
+	(void) snprintf(prop_name, sizeof(prop_name), "%s%s:%s", 
+	    ZIP_META_FILE_PREFIX, metadata->filename, ZIP_META_UNCOMPRESSED_SIZE);
+	(void) snprintf(prop_value, sizeof(prop_value), "%u", metadata->uncompressed_size);
+	if (zfs_prop_set(dataset, prop_name, prop_value) != 0) {
+		return (-1);
+	}
+
+	/* Store CRC32 */
+	(void) snprintf(prop_name, sizeof(prop_name), "%s%s:%s", 
+	    ZIP_META_FILE_PREFIX, metadata->filename, ZIP_META_CRC32);
+	(void) snprintf(prop_value, sizeof(prop_value), "0x%08x", metadata->crc32);
+	if (zfs_prop_set(dataset, prop_name, prop_value) != 0) {
+		return (-1);
+	}
+
+	/* Store modification time */
+	(void) snprintf(prop_name, sizeof(prop_name), "%s%s:%s", 
+	    ZIP_META_FILE_PREFIX, metadata->filename, ZIP_META_MOD_TIME);
+	(void) snprintf(prop_value, sizeof(prop_value), "%u", metadata->mod_time);
+	if (zfs_prop_set(dataset, prop_name, prop_value) != 0) {
+		return (-1);
+	}
+
+	/* Store modification date */
+	(void) snprintf(prop_name, sizeof(prop_name), "%s%s:%s", 
+	    ZIP_META_FILE_PREFIX, metadata->filename, ZIP_META_MOD_DATE);
+	(void) snprintf(prop_value, sizeof(prop_value), "%u", metadata->mod_date);
+	if (zfs_prop_set(dataset, prop_name, prop_value) != 0) {
+		return (-1);
+	}
+
+	/* Store external attributes */
+	(void) snprintf(prop_name, sizeof(prop_name), "%s%s:%s", 
+	    ZIP_META_FILE_PREFIX, metadata->filename, ZIP_META_EXT_ATTR);
+	(void) snprintf(prop_value, sizeof(prop_value), "0x%08x", metadata->ext_attributes);
+	if (zfs_prop_set(dataset, prop_name, prop_value) != 0) {
+		return (-1);
+	}
+
+	/* Store internal attributes */
+	(void) snprintf(prop_name, sizeof(prop_name), "%s%s:%s", 
+	    ZIP_META_FILE_PREFIX, metadata->filename, ZIP_META_INT_ATTR);
+	(void) snprintf(prop_value, sizeof(prop_value), "%u", metadata->int_attributes);
+	if (zfs_prop_set(dataset, prop_name, prop_value) != 0) {
+		return (-1);
+	}
+
+	/* Store version made by */
+	(void) snprintf(prop_name, sizeof(prop_name), "%s%s:%s", 
+	    ZIP_META_FILE_PREFIX, metadata->filename, ZIP_META_VERSION_MADE);
+	(void) snprintf(prop_value, sizeof(prop_value), "%u", metadata->version_made);
+	if (zfs_prop_set(dataset, prop_name, prop_value) != 0) {
+		return (-1);
+	}
+
+	/* Store version needed */
+	(void) snprintf(prop_name, sizeof(prop_name), "%s%s:%s", 
+	    ZIP_META_FILE_PREFIX, metadata->filename, ZIP_META_VERSION_NEEDED);
+	(void) snprintf(prop_value, sizeof(prop_value), "%u", metadata->version_needed);
+	if (zfs_prop_set(dataset, prop_name, prop_value) != 0) {
+		return (-1);
+	}
+
+	/* Store flags */
+	(void) snprintf(prop_name, sizeof(prop_name), "%s%s:%s", 
+	    ZIP_META_FILE_PREFIX, metadata->filename, ZIP_META_FLAGS);
+	(void) snprintf(prop_value, sizeof(prop_value), "%u", metadata->flags);
+	if (zfs_prop_set(dataset, prop_name, prop_value) != 0) {
+		return (-1);
+	}
+
+	return (0);
+}
+
+/*
+ * Store archive-level ZIP metadata in ZFS properties
+ */
+static int
+store_archive_metadata(const char *dataset, zip_end_central_dir_t *end_central_dir)
+{
+	char prop_name[256];
+	char prop_value[64];
+	int ret = 0;
+
+	/* Store total number of entries */
+	(void) snprintf(prop_name, sizeof(prop_name), "%s:total_entries", ZIP_META_ARCHIVE);
+	(void) snprintf(prop_value, sizeof(prop_value), "%u", end_central_dir->total_central_dir_entries);
+	if (zfs_prop_set(dataset, prop_name, prop_value) != 0) {
+		return (-1);
+	}
+
+	/* Store central directory size */
+	(void) snprintf(prop_name, sizeof(prop_name), "%s:central_dir_size", ZIP_META_ARCHIVE);
+	(void) snprintf(prop_value, sizeof(prop_value), "%u", end_central_dir->central_dir_size);
+	if (zfs_prop_set(dataset, prop_name, prop_value) != 0) {
+		return (-1);
+	}
+
+	/* Store central directory offset */
+	(void) snprintf(prop_name, sizeof(prop_name), "%s:central_dir_offset", ZIP_META_ARCHIVE);
+	(void) snprintf(prop_value, sizeof(prop_value), "%u", end_central_dir->central_dir_offset);
+	if (zfs_prop_set(dataset, prop_name, prop_value) != 0) {
+		return (-1);
+	}
+
+	/* Store disk numbers */
+	(void) snprintf(prop_name, sizeof(prop_name), "%s:disk_number", ZIP_META_ARCHIVE);
+	(void) snprintf(prop_value, sizeof(prop_value), "%u", end_central_dir->disk_number);
+	if (zfs_prop_set(dataset, prop_name, prop_value) != 0) {
+		return (-1);
+	}
+
+	(void) snprintf(prop_name, sizeof(prop_name), "%s:central_dir_disk", ZIP_META_ARCHIVE);
+	(void) snprintf(prop_value, sizeof(prop_value), "%u", end_central_dir->central_dir_disk);
+	if (zfs_prop_set(dataset, prop_name, prop_value) != 0) {
+		return (-1);
+	}
+
+	/* Store comment length */
+	(void) snprintf(prop_name, sizeof(prop_name), "%s:comment_length", ZIP_META_ARCHIVE);
+	(void) snprintf(prop_value, sizeof(prop_value), "%u", end_central_dir->zipfile_comment_length);
+	if (zfs_prop_set(dataset, prop_name, prop_value) != 0) {
+		return (-1);
+	}
+
+	return (0);
+}
+
+/*
+ * Free ZIP metadata structure
+ */
+static void
+free_zip_metadata(zip_file_metadata_t *metadata)
+{
+	if (metadata->filename != NULL) {
+		free(metadata->filename);
+		metadata->filename = NULL;
+	}
 }
 
 /*
