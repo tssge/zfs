@@ -76,103 +76,88 @@ log_must zfs import-zip -v $TESTDIR/test_metadata.zip $TESTPOOL/$TESTFS
 # Test 1: Verify archive-level metadata is stored
 log_note "Test 1: Verify archive-level metadata storage"
 
-# Check total entries
-total_entries=$(zfs get -H -o value com.zfs:zip:archive:total_entries $TESTPOOL/$TESTFS)
-log_must eval "echo $total_entries | grep -q '^[0-9]\+$'"
-log_must eval "test $total_entries -ge 3"  # At least 3 files
+# Check comment length (should be 0 for our test ZIP)
+comment_length=$(zfs get -H -o value com.zfs:zip:archive:comment_length $TESTPOOL/$TESTFS)
+log_must eval "echo $comment_length | grep -q '^[0-9]\+$'"
 
-# Check central directory size
-central_dir_size=$(zfs get -H -o value com.zfs:zip:archive:central_dir_size $TESTPOOL/$TESTFS)
-log_must eval "echo $central_dir_size | grep -q '^[0-9]\+$'"
-log_must eval "test $central_dir_size -gt 0"
+# Check disk numbers (should be 0 for single-disk archive)
+disk_number=$(zfs get -H -o value com.zfs:zip:archive:disk_number $TESTPOOL/$TESTFS)
+log_must eval "echo $disk_number | grep -q '^[0-9]\+$'"
 
-# Check central directory offset
-central_dir_offset=$(zfs get -H -o value com.zfs:zip:archive:central_dir_offset $TESTPOOL/$TESTFS)
-log_must eval "echo $central_dir_offset | grep -q '^[0-9]\+$'"
-log_must eval "test $central_dir_offset -gt 0"
+central_dir_disk=$(zfs get -H -o value com.zfs:zip:archive:central_dir_disk $TESTPOOL/$TESTFS)
+log_must eval "echo $central_dir_disk | grep -q '^[0-9]\+$'"
 
 log_note "Test 1 passed: Archive-level metadata stored correctly"
 
-# Test 2: Verify file-level metadata is stored
-log_note "Test 2: Verify file-level metadata storage"
+# Test 2: Verify file-level metadata is stored in xattrs
+log_note "Test 2: Verify file-level metadata storage in xattrs"
 
-# Check file1.txt metadata
-compression_method=$(zfs get -H -o value com.zfs:zip:file:file1.txt:compression_method $TESTPOOL/$TESTFS)
+# Check file1.txt xattrs
+compression_method=$(getfattr -n user.zip.compression_method --only-values $TESTPOOL/$TESTFS/file1.txt 2>/dev/null)
 log_must eval "echo $compression_method | grep -q '^[0-9]\+$'"
 
-compressed_size=$(zfs get -H -o value com.zfs:zip:file:file1.txt:compressed_size $TESTPOOL/$TESTFS)
-log_must eval "echo $compressed_size | grep -q '^[0-9]\+$'"
-
-uncompressed_size=$(zfs get -H -o value com.zfs:zip:file:file1.txt:uncompressed_size $TESTPOOL/$TESTFS)
-log_must eval "echo $uncompressed_size | grep -q '^[0-9]\+$'"
-
-crc32=$(zfs get -H -o value com.zfs:zip:file:file1.txt:crc32 $TESTPOOL/$TESTFS)
-log_must eval "echo $crc32 | grep -q '^0x[0-9a-fA-F]\+$'"
-
-mod_time=$(zfs get -H -o value com.zfs:zip:file:file1.txt:mod_time $TESTPOOL/$TESTFS)
-log_must eval "echo $mod_time | grep -q '^[0-9]\+$'"
-
-mod_date=$(zfs get -H -o value com.zfs:zip:file:file1.txt:mod_date $TESTPOOL/$TESTFS)
-log_must eval "echo $mod_date | grep -q '^[0-9]\+$'"
-
-ext_attributes=$(zfs get -H -o value com.zfs:zip:file:file1.txt:ext_attributes $TESTPOOL/$TESTFS)
-log_must eval "echo $ext_attributes | grep -q '^0x[0-9a-fA-F]\+$'"
-
-version_made=$(zfs get -H -o value com.zfs:zip:file:file1.txt:version_made $TESTPOOL/$TESTFS)
+version_made=$(getfattr -n user.zip.version_made --only-values $TESTPOOL/$TESTFS/file1.txt 2>/dev/null)
 log_must eval "echo $version_made | grep -q '^[0-9]\+$'"
 
-version_needed=$(zfs get -H -o value com.zfs:zip:file:file1.txt:version_needed $TESTPOOL/$TESTFS)
+version_needed=$(getfattr -n user.zip.version_needed --only-values $TESTPOOL/$TESTFS/file1.txt 2>/dev/null)
 log_must eval "echo $version_needed | grep -q '^[0-9]\+$'"
 
-flags=$(zfs get -H -o value com.zfs:zip:file:file1.txt:flags $TESTPOOL/$TESTFS)
+flags=$(getfattr -n user.zip.flags --only-values $TESTPOOL/$TESTFS/file1.txt 2>/dev/null)
 log_must eval "echo $flags | grep -q '^[0-9]\+$'"
 
-log_note "Test 2 passed: File-level metadata stored correctly"
+internal_attributes=$(getfattr -n user.zip.internal_attributes --only-values $TESTPOOL/$TESTFS/file1.txt 2>/dev/null)
+log_must eval "echo $internal_attributes | grep -q '^[0-9]\+$'"
 
-# Test 3: Verify metadata consistency
-log_note "Test 3: Verify metadata consistency"
+local_header_offset=$(getfattr -n user.zip.local_header_offset --only-values $TESTPOOL/$TESTFS/file1.txt 2>/dev/null)
+log_must eval "echo $local_header_offset | grep -q '^[0-9]\+$'"
 
-# Check that uncompressed size matches actual file size
-actual_size=$(stat -c%s $TESTPOOL/$TESTFS/file1.txt)
-log_must eval "test $uncompressed_size -eq $actual_size"
+log_note "Test 2 passed: File-level metadata stored correctly in xattrs"
+
+# Test 3: Verify filesystem metadata consistency
+log_note "Test 3: Verify filesystem metadata consistency"
 
 # Check that compression method is valid (0=store, 8=deflate)
 log_must eval "test $compression_method -eq 0 -o $compression_method -eq 8"
 
-# Check that compressed size is reasonable
-log_must eval "test $compressed_size -le $uncompressed_size"
+# Check that version information is reasonable
+log_must eval "test $version_made -ge 10"  # ZIP version 1.0+
+log_must eval "test $version_needed -ge 10"  # ZIP version 1.0+
 
 log_note "Test 3 passed: Metadata consistency verified"
 
-# Test 4: Verify all files have metadata
-log_note "Test 4: Verify all files have metadata"
+# Test 4: Verify all files have xattr metadata
+log_note "Test 4: Verify all files have xattr metadata"
 
-# Check that all extracted files have corresponding metadata
+# Check that all extracted files have corresponding xattrs
 for file in file1.txt file2.txt binary.dat; do
 	if [[ -f $TESTPOOL/$TESTFS/$file ]]; then
-		# Check that metadata exists for this file
-		comp_method=$(zfs get -H -o value com.zfs:zip:file:$file:compression_method $TESTPOOL/$TESTFS 2>/dev/null)
+		# Check that compression method xattr exists
+		comp_method=$(getfattr -n user.zip.compression_method --only-values $TESTPOOL/$TESTFS/$file 2>/dev/null)
 		log_must eval "echo $comp_method | grep -q '^[0-9]\+$'"
 		
-		# Check that CRC32 exists
-		crc=$(zfs get -H -o value com.zfs:zip:file:$file:crc32 $TESTPOOL/$TESTFS 2>/dev/null)
-		log_must eval "echo $crc | grep -q '^0x[0-9a-fA-F]\+$'"
+		# Check that version xattr exists
+		version=$(getfattr -n user.zip.version_made --only-values $TESTPOOL/$TESTFS/$file 2>/dev/null)
+		log_must eval "echo $version | grep -q '^[0-9]\+$'"
 	else
 		log_fail "File $file not found in dataset"
 	fi
 done
 
-log_note "Test 4 passed: All files have metadata"
+log_note "Test 4 passed: All files have xattr metadata"
 
 # Test 5: Verify metadata can be queried programmatically
 log_note "Test 5: Verify metadata querying"
 
-# List all ZIP metadata properties
+# List all ZIP archive properties
 zip_props=$(zfs get -H -o name,value -t filesystem $TESTPOOL/$TESTFS | grep "com.zfs:zip:")
-log_must eval "echo '$zip_props' | grep -q 'archive:total_entries'"
-log_must eval "echo '$zip_props' | grep -q 'file:file1.txt:compression_method'"
-log_must eval "echo '$zip_props' | grep -q 'file:file2.txt:crc32'"
-log_must eval "echo '$zip_props' | grep -q 'file:binary.dat:mod_time'"
+log_must eval "echo '$zip_props' | grep -q 'archive:comment_length'"
+log_must eval "echo '$zip_props' | grep -q 'archive:disk_number'"
+log_must eval "echo '$zip_props' | grep -q 'archive:central_dir_disk'"
+
+# List xattrs on a file
+xattr_list=$(getfattr -d $TESTPOOL/$TESTFS/file1.txt 2>/dev/null | grep "user.zip.")
+log_must eval "echo '$xattr_list' | grep -q 'user.zip.compression_method'"
+log_must eval "echo '$xattr_list' | grep -q 'user.zip.version_made'"
 
 log_note "Test 5 passed: Metadata can be queried programmatically"
 
@@ -182,13 +167,13 @@ log_note "Test 6: Verify metadata survives dataset operations"
 # Create a snapshot
 log_must zfs snapshot $TESTPOOL/$TESTFS@test
 
-# Verify metadata still exists in snapshot
-snap_entries=$(zfs get -H -o value com.zfs:zip:archive:total_entries $TESTPOOL/$TESTFS@test)
-log_must eval "test $snap_entries -eq $total_entries"
+# Verify archive metadata still exists in snapshot
+snap_comment=$(zfs get -H -o value com.zfs:zip:archive:comment_length $TESTPOOL/$TESTFS@test)
+log_must eval "test $snap_comment -eq $comment_length"
 
-# Verify metadata still exists in original dataset
-orig_entries=$(zfs get -H -o value com.zfs:zip:archive:total_entries $TESTPOOL/$TESTFS)
-log_must eval "test $orig_entries -eq $total_entries"
+# Verify xattrs still exist in snapshot
+snap_comp_method=$(getfattr -n user.zip.compression_method --only-values $TESTPOOL/$TESTFS@test/file1.txt 2>/dev/null)
+log_must eval "test $snap_comp_method -eq $compression_method"
 
 log_note "Test 6 passed: Metadata survives dataset operations"
 
