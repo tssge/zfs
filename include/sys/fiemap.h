@@ -66,6 +66,13 @@
 #define	FIEMAP_EXTENT_SHARED	0x00002000
 #endif
 
+/*
+ * Data is compressed by fs. Sets EXTENT_ENCODED. Future kernel support.
+ */
+#ifndef FIEMAP_EXTENT_DATA_COMPRESSED
+#define	FIEMAP_EXTENT_DATA_COMPRESSED	0x00000040
+#endif
+
 #ifdef _KERNEL
 
 #include <sys/spa.h>		/* for SPA_DVAS_PER_BP */
