@@ -5406,40 +5406,65 @@ metaslab_alloc_dva_range(spa_t *spa, metaslab_class_t *mc, uint64_t psize,
 
 	rotor = mg;
 top:
-	do {
-		ASSERT(mg->mg_activation_count == 1);
-		ASSERT(mg->mg_class == mc);
+	/*
+	 * Allocation priority: First try vdevs with priority > 0,
+	 * then fall back to priority 0 (last resort) if needed.
+	 */
+	for (int priority_pass = 0; priority_pass < 2; priority_pass++) {
+		mg = rotor;
+		do {
+			ASSERT(mg->mg_activation_count == 1);
+			ASSERT(mg->mg_class == mc);
 
-		if (!metaslab_group_allocatable(spa, mg, psize, d, flags,
-		    try_hard, zal, allocator))
-			goto next;
+			vd = mg->mg_vd;
 
-		vd = mg->mg_vd;
-		uint64_t asize = vdev_psize_to_asize_txg(vd, psize, txg);
-		ASSERT0(P2PHASE(asize, 1ULL << vd->vdev_ashift));
-		uint64_t max_asize = vdev_psize_to_asize_txg(vd, max_psize,
-		    txg);
-		ASSERT0(P2PHASE(max_asize, 1ULL << vd->vdev_ashift));
-		uint64_t offset = metaslab_group_alloc(mg, zal, asize,
-		    max_asize, txg, dva, d, allocator, try_hard,
-		    &asize);
+			/* Skip vdevs based on allocation priority */
+			if (priority_pass == 0 &&
+			    vd->vdev_alloc_priority == 0) {
+				goto next;
+			}
+			if (priority_pass == 1 &&
+			    vd->vdev_alloc_priority != 0) {
+				goto next;
+			}
 
-		if (offset != -1ULL) {
-			if (actual_psize)
-				*actual_psize = vdev_asize_to_psize_txg(vd,
-				    asize, txg);
-			metaslab_class_rotate(mg, allocator, psize, B_TRUE);
+			if (!metaslab_group_allocatable(spa, mg, psize, d,
+			    flags, try_hard, zal, allocator))
+				goto next;
 
-			DVA_SET_VDEV(&dva[d], vd->vdev_id);
-			DVA_SET_OFFSET(&dva[d], offset);
-			DVA_SET_GANG(&dva[d],
-			    ((flags & METASLAB_GANG_HEADER) ? 1 : 0));
-			DVA_SET_ASIZE(&dva[d], asize);
-			return (0);
-		}
+			uint64_t asize = vdev_psize_to_asize_txg(vd, psize,
+			    txg);
+			ASSERT0(P2PHASE(asize, 1ULL << vd->vdev_ashift));
+			uint64_t max_asize = vdev_psize_to_asize_txg(vd,
+			    max_psize, txg);
+			ASSERT0(P2PHASE(max_asize, 1ULL << vd->vdev_ashift));
+			uint64_t offset = metaslab_group_alloc(mg, zal, asize,
+			    max_asize, txg, dva, d, allocator, try_hard,
+			    &asize);
+
+			if (offset != -1ULL) {
+				if (actual_psize)
+					*actual_psize =
+					    vdev_asize_to_psize_txg(vd,
+					    asize, txg);
+				metaslab_class_rotate(mg, allocator, psize,
+				    B_TRUE);
+
+				DVA_SET_VDEV(&dva[d], vd->vdev_id);
+				DVA_SET_OFFSET(&dva[d], offset);
+				DVA_SET_GANG(&dva[d],
+				    ((flags & METASLAB_GANG_HEADER) ? 1 : 0));
+				DVA_SET_ASIZE(&dva[d], asize);
+				return (0);
+			}
 next:
-		metaslab_class_rotate(mg, allocator, psize, B_FALSE);
-	} while ((mg = mg->mg_next) != rotor);
+			metaslab_class_rotate(mg, allocator, psize, B_FALSE);
+		} while ((mg = mg->mg_next) != rotor);
+
+		/* If first pass succeeded or this is last resort pass, exit */
+		if (priority_pass == 1)
+			break;
+	}
 
 	/*
 	 * If we haven't tried hard, perhaps do so now.
