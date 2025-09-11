@@ -347,6 +347,7 @@ ZFS_OBJS := \
 	edonr_zfs.o \
 	fm.o \
 	gzip.o \
+	deflate.o \
 	hkdf.o \
 	lz4.o \
 	lz4_zfs.o \
