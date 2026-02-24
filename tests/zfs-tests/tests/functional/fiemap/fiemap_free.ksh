@@ -20,7 +20,7 @@
 #
 
 # DESCRIPTION:
-#	Verify FIEMAP unwritten extents are reported for pending frees.
+#	Verify FIEMAP hole extents are reported for pending frees.
 #	Then after a sync the extents are fully described on disk.
 #
 # STRATEGY:
@@ -55,10 +55,10 @@ for recordsize in 4096 8192 16384 32768 65536 131072 ; do
 	fiemap_write $BS 1
 	fiemap_verify -s -D 0:$BS:1
 	fiemap_free $BS 1
-	fiemap_verify -H 0:$BS:1 -F "unwritten:0"
-	fiemap_verify -h -H 0:$BS:1 -F "unwritten:1"
-	fiemap_verify -s -H 0:$BS:1 -F "unwritten:0"
-	fiemap_verify -h -H 0:$BS:1 -F "unwritten:1"
+	fiemap_verify -H 0:$BS:1
+	fiemap_verify -h -H 0:$BS:1
+	fiemap_verify -s -H 0:$BS:1
+	fiemap_verify -s -h -H 0:$BS:1
 	fiemap_remove
 
 	# Multiple blocks: oooooooo
@@ -66,10 +66,10 @@ for recordsize in 4096 8192 16384 32768 65536 131072 ; do
 	fiemap_write $BS 8
 	fiemap_verify -s -D 0:$((BS*8)):1
 	fiemap_free $BS 8
-	fiemap_verify -H 0:$((BS*8)):1 -F "delalloc,unwritten:0"
-	fiemap_verify -h -H 0:$((BS*8)):1 -F "delalloc,unwritten:1"
-	fiemap_verify -s -H 0:$((BS*8)):1 -F "unwritten:0"
-	fiemap_verify -h -H 0:$((BS*8)):1 -F "unwritten:1"
+	fiemap_verify -H 0:$((BS*8)):1 -F "delalloc,unknown:0"
+	fiemap_verify -h -H 0:$((BS*8)):1 -F "delalloc,unknown:1"
+	fiemap_verify -s -H 0:$((BS*8)):1
+	fiemap_verify -s -h -H 0:$((BS*8)):1
 	fiemap_remove
 
 	# Single partial block: o
@@ -95,26 +95,29 @@ for recordsize in 4096 8192 16384 32768 65536 131072 ; do
 	fiemap_remove
 
 	# Alternate dirty/free: DDDDDDD -> DoooooD -> DoDDDoD -> DoDoDoD
+	# Sync after initial write so blocks 0-6 have stable BPs.
+	# Subsequent writes create new dirty (DELALLOC) data.
 	log_note "Alternate overlapping pending dirty -> free -> dirty ->free"
 	fiemap_write $BS 7 0
 	fiemap_verify -D 0:$((BS*7)):1 -F "delalloc:all"
+	fiemap_verify -s -D 0:$((BS*7)):1 -F "delalloc:0"
 	fiemap_free $BS 5 1
 	fiemap_verify -D 0:$BS:1 -H $BS:$((BS*5)):1 -D $((BS*6)):$BS:1 \
-	    -F "delalloc,unwritten:0"
+	    -F "delalloc,unknown:0"
 	fiemap_verify -h -D 0:$BS:1 -H $BS:$((BS*5)):1 -D $((BS*6)):$BS:1 \
-	    -F "delalloc,unwritten:1"
+	    -F "delalloc,unknown:1"
 	fiemap_write $BS 3 2
 	fiemap_verify -D 0:$BS:1 -H $BS:$BS:1 -D $((BS*2)):$((BS*3)):1 \
-	    -H $((BS*5)):$BS:1 -D $((BS*6)):$BS:1 -F "delalloc,unwritten:0"
+	    -H $((BS*5)):$BS:1 -D $((BS*6)):$BS:1 -F "delalloc,unknown:1"
 	fiemap_verify -h -D 0:$BS:1 -H $BS:$BS:1 -D $((BS*2)):$((BS*3)):1 \
-	    -H $((BS*5)):$BS:1 -D $((BS*6)):$BS:1 -F "delalloc,unwritten:2"
+	    -H $((BS*5)):$BS:1 -D $((BS*6)):$BS:1 -F "delalloc,unknown:3"
 	fiemap_free $BS 1 3
 	fiemap_verify -D 0:$BS:1 -H $BS:$BS:1 -D $((BS*2)):$BS:1 \
 	    -H $((BS*3)):$BS:1 -D $((BS*4)):$BS:1 -H $((BS*5)):$BS:1 \
-	    -D $((BS*6)):$BS:1 -F "delalloc,unwritten:0"
+	    -D $((BS*6)):$BS:1 -F "delalloc,unknown:2"
 	fiemap_verify -h -D 0:$BS:1 -H $BS:$BS:1 -D $((BS*2)):$BS:1 \
 	    -H $((BS*3)):$BS:1 -D $((BS*4)):$BS:1 -H $((BS*5)):$BS:1 \
-	    -D $((BS*6)):$BS:1 -F "delalloc,unwritten:3"
+	    -D $((BS*6)):$BS:1 -F "delalloc,unknown:5"
 	fiemap_verify -s -D 0:$BS:1 -H $BS:$BS:1 -D $((BS*2)):$BS:1 \
 	    -H $((BS*3)):$BS:1 -D $((BS*4)):$BS:1 -H $((BS*5)):$BS:1 \
 	    -D $((BS*6)):$BS:1 -F "delalloc:0"

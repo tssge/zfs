@@ -51,13 +51,20 @@
 #endif
 
 /*
- * Request that holes be reported as FIEMAP_EXTENT_UNWRITTEN extents.  This
- * flag can be used internally to implement version of SEEK_HOLE which
- * properly account for dirty data.
+ * Request that holes be reported as extents.  This flag can be used
+ * internally to implement a version of SEEK_HOLE which properly
+ * accounts for dirty data.
  */
 #ifndef FIEMAP_FLAG_HOLES
 #define	FIEMAP_FLAG_HOLES	0x02000000
 #endif
+
+/*
+ * Internal flag used to identify hole extents in the AVL tree.  COW
+ * filesystems do not have unwritten (fallocate) extents, so holes are
+ * simply gaps.  This flag is stripped before reporting to userspace.
+ */
+#define	ZFS_FIEMAP_HOLE		0x80000000
 
 /*
  * Extent is shared with other space.  Introduced in 2.6.33 kernel.
@@ -100,6 +107,16 @@ typedef struct zfs_fiemap {
 	uint64_t fm_file_size;		/* cached inode size */
 	uint64_t fm_block_size;		/* cached dnp block size */
 	uint64_t fm_fill_count;		/* only used with FIEMAP_FLAG_NOMERGE */
+
+	/*
+	 * Dnode block pointer, used to report the physical location of
+	 * the dnode block for embedded block pointers.  DVA[0] only.
+	 */
+	blkptr_t fm_dn_blkptr;
+
+	/* Chunking state for bounded tree walk */
+	uint64_t fm_chunk_blkid;	/* L0 resume blkid for next chunk */
+	uint64_t fm_chunk_count;	/* L0 blocks processed this chunk */
 
 	/* Immutable */
 	uint64_t fm_start;		/* stat of requested range */

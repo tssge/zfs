@@ -128,14 +128,14 @@ for recordsize in 4096 8192 16384 32768 65536 131072 ; do
 	# Overwrite an existing hole: .DDD....
 	log_note "Overwrite an existing hole"
 	fiemap_hole $BS 8
-	fiemap_verify -s -h -H 0:$((BS*8)):1 -F "unwritten:1"
+	fiemap_verify -s -h -H 0:$((BS*8)):1
 	fiemap_write $BS 3 1
 	fiemap_verify -h -H 0:$((BS*1)):1 -D $((BS)):$((BS*3)):1 \
-	    -H $((BS*4)):$((BS*4)):1 -F "unwritten:2"
+	    -H $((BS*4)):$((BS*4)):1
 	fiemap_verify -H 0:$((BS*1)):1 -D $((BS)):$((BS*3)):1 \
 	    -H $((BS*4)):$((BS*4)):1 -F "delalloc:1"
 	fiemap_verify -h -s -H 0:$((BS*1)):1 -D $((BS)):$((BS*3)):1 \
-	    -H $((BS*4)):$((BS*4)):1 -F "unwritten:2"
+	    -H $((BS*4)):$((BS*4)):1
 	fiemap_verify -s -H 0:$((BS*1)):1 -D $((BS)):$((BS*3)):1 \
 	    -H $((BS*4)):$((BS*4)):1 -F "delalloc:0"
 	fiemap_remove

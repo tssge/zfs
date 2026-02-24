@@ -20,6 +20,7 @@
 #include <unistd.h>
 #include <stdlib.h>
 #include <stdint.h>
+#include <string.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <sys/ioctl.h>
@@ -63,14 +64,39 @@ typedef struct fiemap_args {
 	verify_mode_t	fa_verify_dev_mode;
 	int		fa_verify_dev_count;
 	int		fa_verify_extent_expected;
+	unsigned	fa_max_extents;
+	boolean_t	fa_verify_physical;
 } fiemap_args_t;
+
+/*
+ * Identify hole extents by their physical characteristics: zero physical
+ * offset and length, with no data flags set.  COW filesystems do not have
+ * FIEMAP_EXTENT_UNWRITTEN extents (that concept applies to fallocate).
+ */
+static boolean_t
+fiemap_extent_is_hole(struct fiemap_extent *ext)
+{
+	/*
+	 * ZFS reports ZFS_FIEMAP_HOLE on hole extents (both synced holes
+	 * and pending-free holes).  This allows reliable hole detection
+	 * even when FIEMAP_EXTENT_DELALLOC is set on pending frees.
+	 */
+	if (ext->fe_flags & ZFS_FIEMAP_HOLE)
+		return (B_TRUE);
+
+	return (ext->fe_physical == 0 && ext->fe_physical_length_reserved == 0 &&
+	    !(ext->fe_flags & (FIEMAP_EXTENT_DATA_INLINE |
+	    FIEMAP_EXTENT_DATA_ENCRYPTED | FIEMAP_EXTENT_ENCODED |
+	    FIEMAP_EXTENT_DELALLOC)));
+}
 
 static int
 usage(const char *msg, int exit_value)
 {
-	(void) fprintf(stderr, "fiemap [-achsv?] "
+	(void) fprintf(stderr, "fiemap [-achsPv?] "
 	    "[[-DH] <offset:length:refs>] [-F <flags:[=<>count>]\n"
-	    "    [-V <vdev:[=<>]count>] [-E extent-count] filename\n");
+	    "    [-V <vdev:[=<>]count>] [-E extent-count] "
+	    "[-m max-extents] filename\n");
 
 	if (msg != NULL)
 		(void) fprintf(stderr, "%s\n", msg);
@@ -107,6 +133,8 @@ fiemap_ioctl(fiemap_args_t *fa)
 	}
 
 	extents = fiemap->fm_mapped_extents;
+	if (fa->fa_max_extents > 0 && extents > fa->fa_max_extents)
+		extents = fa->fa_max_extents;
 	size += sizeof (struct fiemap_extent) * extents;
 	free(fiemap);
 
@@ -144,6 +172,8 @@ fiemap_extent_flags_str(struct fiemap_extent *extent, char *str, int size)
 
 	if (flags & FIEMAP_EXTENT_LAST)
 		next += snprintf(next, size - (next - str), "last,");
+	if (flags & ZFS_FIEMAP_HOLE)
+		next += snprintf(next, size - (next - str), "hole,");
 	if (flags & FIEMAP_EXTENT_UNKNOWN)
 		next += snprintf(next, size - (next - str), "unknown,");
 	if (flags & FIEMAP_EXTENT_DELALLOC)
@@ -160,6 +190,11 @@ fiemap_extent_flags_str(struct fiemap_extent *extent, char *str, int size)
 		next += snprintf(next, size - (next - str), "data-tail,");
 	if (flags & FIEMAP_EXTENT_UNWRITTEN)
 		next += snprintf(next, size - (next - str), "unwritten,");
+	/*
+	 * Note: ZFS no longer reports FIEMAP_EXTENT_UNWRITTEN for holes.
+	 * Holes are identified by zero physical offset/length.  The above
+	 * check is retained for compatibility with other filesystems.
+	 */
 	if (flags & FIEMAP_EXTENT_MERGED)
 		next += snprintf(next, size - (next - str), "merged,");
 	if (flags & FIEMAP_EXTENT_SHARED)
@@ -177,7 +212,6 @@ static char *
 fiemap_extent_str(struct fiemap_extent *extent, int type, char *str, int size)
 {
 	uint64_t start = 0, end = 0, len = 0;
-	unsigned flags = extent->fe_flags;
 
 	switch (type) {
 	case PRINT_LOGICAL:
@@ -187,7 +221,7 @@ fiemap_extent_str(struct fiemap_extent *extent, int type, char *str, int size)
 			end = extent->fe_logical + len - 1;
 		break;
 	case PRINT_PHYSICAL:
-		if (!(flags & FIEMAP_EXTENT_UNWRITTEN)) {
+		if (!fiemap_extent_is_hole(extent)) {
 			len = extent->fe_physical_length_reserved;
 			start = extent->fe_physical;
 			if (start || len)
@@ -284,20 +318,20 @@ fiemap_verify_extents(fiemap_args_t *fa, verify_tree_type_t type)
 		for (int i = 0; i < fa->fa_fiemap->fm_mapped_extents; i++) {
 			ext = &fa->fa_fiemap->fm_extents[i];
 
-			if (!(ext->fe_flags & FIEMAP_EXTENT_UNWRITTEN))
+			if (!fiemap_extent_is_hole(ext))
 				fiemap_verify_extent_dec(t, ext->fe_logical,
 				    ext->fe_length);
 		}
 	} else if (is_hole && fa->fa_flags & FIEMAP_FLAG_HOLES) {
 		/*
-		 * FIEMAP_FLAG_HOLES was passes so all hole extents will be
+		 * FIEMAP_FLAG_HOLES was passed so all hole extents will be
 		 * reported, the provided space reference tree only needs to
 		 * decrement the given ranges.
 		 */
 		for (int i = 0; i < fa->fa_fiemap->fm_mapped_extents; i++) {
 			ext = &fa->fa_fiemap->fm_extents[i];
 
-			if (ext->fe_flags & FIEMAP_EXTENT_UNWRITTEN)
+			if (fiemap_extent_is_hole(ext))
 				fiemap_verify_extent_dec(t, ext->fe_logical,
 				    ext->fe_length);
 		}
@@ -319,7 +353,7 @@ fiemap_verify_extents(fiemap_args_t *fa, verify_tree_type_t type)
 		for (int i = 0; i < fa->fa_fiemap->fm_mapped_extents; i++) {
 			ext = &fa->fa_fiemap->fm_extents[i];
 
-			if (!(ext->fe_flags & FIEMAP_EXTENT_UNWRITTEN))
+			if (!fiemap_extent_is_hole(ext))
 				fiemap_verify_extent_dec(&ht, ext->fe_logical,
 				    ext->fe_length);
 		}
@@ -372,6 +406,26 @@ fiemap_verify_extents(fiemap_args_t *fa, verify_tree_type_t type)
 }
 
 /*
+ * Check if all comma-separated flags in the query string are present
+ * in the extent flags string, regardless of order.  For example,
+ * query "delalloc,unknown" matches "last,unknown,delalloc,merged".
+ */
+static boolean_t
+fiemap_flags_match(const char *fstr, const char *query)
+{
+	char buf[128];
+	char *tok, *save;
+
+	snprintf(buf, sizeof (buf), "%s", query);
+	for (tok = strtok_r(buf, ",", &save); tok != NULL;
+	    tok = strtok_r(NULL, ",", &save)) {
+		if (strstr(fstr, tok) == NULL)
+			return (B_FALSE);
+	}
+	return (B_TRUE);
+}
+
+/*
  * When a list of extent flags has been provided verify that a certain
  * number of extents have the specified flags set.  VERIFY_MODE_ALL can be
  * used to indicate that all extents must include the flags
@@ -386,7 +440,7 @@ fiemap_verify_flags(fiemap_args_t *fa)
 		struct fiemap_extent *extent = &fa->fa_fiemap->fm_extents[i];
 
 		(void) fiemap_extent_flags_str(extent, fstr, 128);
-		if (strstr(fstr, fa->fa_verify_flags_str) != NULL)
+		if (fiemap_flags_match(fstr, fa->fa_verify_flags_str))
 			count++;
 	}
 
@@ -544,6 +598,34 @@ fiemap_verify_extent_count(fiemap_args_t *fa)
 }
 
 /*
+ * Verify that all data extents have a non-zero physical offset.
+ * This catches embedded block pointers that fail to report the
+ * physical location of the containing dnode block.
+ */
+static int
+fiemap_verify_physical(fiemap_args_t *fa)
+{
+	struct fiemap *fiemap = fa->fa_fiemap;
+	int error = 0;
+
+	for (unsigned i = 0; i < fiemap->fm_mapped_extents; i++) {
+		struct fiemap_extent *ext = &fiemap->fm_extents[i];
+
+		if (fiemap_extent_is_hole(ext))
+			continue;
+
+		if (ext->fe_physical == 0) {
+			printf("Extent %u at offset %llu has zero physical "
+			    "offset\n", i,
+			    (unsigned long long)ext->fe_logical);
+			error = EDOM;
+		}
+	}
+
+	return (error);
+}
+
+/*
  * Verify reported extents cover the entire requested range.  Optionally,
  * perform additional checks on the reported extents based on the provided
  * command line options.  The file stats as reported by fstat(2) are cached
@@ -578,6 +660,10 @@ fiemap_verify(fiemap_args_t *fa)
 	if (fa->fa_verify_extent_count == B_TRUE &&
 	    fiemap_verify_extent_count(fa))
 		error |= 0x40;
+
+	if (fa->fa_verify_physical == B_TRUE &&
+	    fiemap_verify_physical(fa))
+		error |= 0x80;
 
 	return (error);
 }
@@ -629,7 +715,7 @@ main(int argc, char *argv[])
 
 	fiemap_init(&fa);
 
-	while ((c = getopt(argc, argv, "achsvD:E:H:F:V:?")) != -1) {
+	while ((c = getopt(argc, argv, "achsPvD:E:H:F:V:m:?")) != -1) {
 		switch (c) {
 		case 'a':
 			fa.fa_flags |= FIEMAP_FLAG_NOMERGE;
@@ -644,8 +730,14 @@ main(int argc, char *argv[])
 		case 's':
 			fa.fa_flags |= FIEMAP_FLAG_SYNC;
 			break;
+		case 'P':
+			fa.fa_verify_physical = B_TRUE;
+			break;
 		case 'v':
 			fa.fa_verbose = B_TRUE;
+			break;
+		case 'm':
+			fa.fa_max_extents = strtoul(optarg, NULL, 0);
 			break;
 		case 'D':
 			matched = sscanf(optarg, "%llu:%llu:%lld",

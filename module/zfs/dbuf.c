@@ -5440,9 +5440,6 @@ dbuf_add_dirty_map(list_t *list, zfs_range_tree_t *dirty_tree,
 	for (dr = list_head(list); dr != NULL; dr = list_next(list, dr)) {
 		dmu_buf_impl_t *db = dr->dr_dbuf;
 
-		if (db->db_buf == NULL)
-			(void) dbuf_read(db, NULL, DB_RF_MUST_SUCCEED);
-
 		if (db->db_level > 0) {
 			dbuf_add_dirty_map(&dr->dt.di.dr_children, dirty_tree,
 			    free_tree);
@@ -5504,21 +5501,12 @@ dbuf_generate_dirty_maps(dnode_t *dn, zfs_range_tree_t *dirty_tree,
 	}
 
 	/*
-	 * Rather than wait for the syncing transaction to complete, which
-	 * can take a considerable amount of time.  Determine if the given
-	 * dnode is still dirty and has pending free blocks and dirty records
-	 * which must be added to the pending mappings.  If the dnode is
-	 * determined to be dirty it will remain dirty until the sublist
-	 * lock is released.
+	 * Determine if the given dnode is dirty in the syncing TXG.  If it
+	 * is not dirty, the syncing TXG can be skipped.  The dnode will
+	 * remain dirty until the sublist lock is released.
 	 */
-	boolean_t dirty = B_FALSE;
-	for (dnode_t *mls_dn = multilist_sublist_head(mls); mls_dn != NULL;
-	    mls_dn = multilist_sublist_next(mls, mls_dn)) {
-		if (dn == mls_dn) {
-			dirty = B_TRUE;
-			break;
-		}
-	}
+	boolean_t dirty = multilist_link_active(
+	    &dn->dn_dirty_link[txgoff]);
 
 	if (!dirty)
 		txg++;

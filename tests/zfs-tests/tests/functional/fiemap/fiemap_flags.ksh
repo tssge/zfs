@@ -73,14 +73,14 @@ log_note "Verify 'delalloc' is set on pending zeros which will be holes"
 fiemap_hole $BS 2
 fiemap_verify -F "delalloc:all"
 fiemap_verify -s -F "delalloc:=0"
-fiemap_verify -h -F "unwritten,merged:=1"
 fiemap_remove
 
-# Verify "unwritten" is set on holes if they are requested.
-log_note "Verify 'unwritten' flag for holes"
+# Verify holes are reported when requested but have no special flags.
+# COW filesystems do not have FIEMAP_EXTENT_UNWRITTEN extents.
+log_note "Verify hole reporting without unwritten flag"
 fiemap_hole $BS 32
 fiemap_verify -s -F "unwritten:0"
-fiemap_verify -h -F "unwritten:all"
+fiemap_verify -h -H 0:$((BS*32)):1
 fiemap_remove
 
 # Verify "merged" is set on blocks merged in to extents.
@@ -97,7 +97,7 @@ fiemap_remove
 log_note "Verify 'merged' is set on holes merged in to extents"
 fiemap_hole $BS 64 0
 fiemap_verify -s -F "unwritten:0"
-fiemap_verify -h -F "unwritten,merged:=1"
+fiemap_verify -h -F "hole,merged:=1"
 fiemap_remove
 
 # Verify "merged" is set on tail holes if requested.
@@ -106,7 +106,7 @@ log_note "Verify 'merged' is set on tail holes"
 fiemap_write $BS 32 0
 fiemap_hole $BS 32 32
 fiemap_verify -s -F "unwritten:0"
-fiemap_verify -h -F "unwritten,merged:=1"
+fiemap_verify -h -F "hole,merged:=1"
 fiemap_remove
 
 # Verify "merged" is set on head holes if requested.
@@ -115,7 +115,7 @@ log_note "Verify 'merged' is set on head holes"
 fiemap_hole $BS 32 0
 fiemap_write $BS 32 32
 fiemap_verify -s -F "unwritten:0"
-fiemap_verify -h -F "unwritten,merged:=1"
+fiemap_verify -h -F "hole,merged:=1"
 fiemap_remove
 
 # Gang blocks
@@ -144,8 +144,9 @@ log_must zfs set dedup=off $TESTPOOL/$TESTFS
 
 # Verify indirect blocks, they should exist on the device before
 # it is removed but afterwards the remapped versions are reported.
+# Write enough blocks to ensure the allocator distributes across all vdevs.
 log_note "Verify indirect blocks"
-fiemap_write $BS 64
+fiemap_write $BS 512
 fiemap_verify -s -V "0:>0"
 log_must zpool remove $TESTPOOL $DISK
 wait_for_removal $TESTPOOL
