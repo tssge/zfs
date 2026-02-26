@@ -68,7 +68,8 @@ old_compression=$(get_prop compression $TESTPOOL/$TESTFS)
 log_must zfs set compression=off $TESTPOOL/$TESTFS
 
 old_flags=$(cat "$ZFS_FLAGS_PATH")
-typeset -i new_flags=$((old_flags | ZFS_DEBUG_INDIRECT_REMAP))
+new_flags=$(printf "0x%08x" \
+    $(((old_flags | ZFS_DEBUG_INDIRECT_REMAP) & 0xffffffff)))
 log_must eval "echo $new_flags > $ZFS_FLAGS_PATH"
 
 # Place data on the soon-to-be-removed top-level vdev.
