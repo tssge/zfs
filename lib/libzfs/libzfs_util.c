@@ -55,8 +55,10 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 
+#ifdef __linux__
 #include <linux/fiemap.h>
 #include <linux/fs.h>
+#endif
 
 #include <libzfs.h>
 #include <libzfs_core.h>
@@ -2174,10 +2176,11 @@ err:
 
 /*
  * zfs_get_hole_count() retrieves the number of holes (blocks which are
- * zero-filled) in the specified file using the FS_IOC_FIEMAP ioctl.  It
- * also optionally fetches the block size when bs is non-NULL.  With hole
- * count and block size the full space consumed by the holes of a file can
- * be calculated.
+ * zero-filled) in the specified file.  On Linux it uses FS_IOC_FIEMAP,
+ * while on platforms with SEEK_HOLE/SEEK_DATA it falls back to lseek().
+ * It also optionally fetches the block size when bs is non-NULL.  With
+ * hole count and block size the full space consumed by the holes of a
+ * file can be calculated.
  *
  * On success, zero is returned, the count argument is set to the number of
  * unallocated blocks (holes), and the bs argument is set to the block size
@@ -2187,6 +2190,7 @@ err:
 int
 zfs_get_hole_count(const char *path, uint64_t *count, uint64_t *bs)
 {
+#ifdef __linux__
 	struct fiemap *fiemap;
 	struct stat64 ss;
 	uint64_t fill;
@@ -2246,6 +2250,79 @@ zfs_get_hole_count(const char *path, uint64_t *count, uint64_t *bs)
 		return (errno);
 
 	return (0);
+#elif defined(SEEK_HOLE) && defined(SEEK_DATA)
+	struct stat ss;
+	uint64_t hole_bytes = 0;
+	off_t data, hole;
+	off_t off = 0;
+	off_t file_size;
+	int fd, error;
+
+	fd = open(path, O_RDONLY);
+	if (fd == -1)
+		return (errno);
+
+	if (fstat(fd, &ss) == -1) {
+		error = errno;
+		(void) close(fd);
+		return (error);
+	}
+
+	if (ss.st_blksize == 0) {
+		(void) close(fd);
+		return (EINVAL);
+	}
+
+	file_size = ss.st_size;
+	while (off < file_size) {
+		data = lseek(fd, off, SEEK_DATA);
+		if (data == -1) {
+			if (errno == ENXIO) {
+				hole_bytes += (uint64_t)(file_size - off);
+				break;
+			}
+
+			error = errno;
+			(void) close(fd);
+			return (error);
+		}
+
+		if (data > file_size)
+			data = file_size;
+
+		if (data > off)
+			hole_bytes += (uint64_t)(data - off);
+
+		if (data == file_size)
+			break;
+
+		hole = lseek(fd, data, SEEK_HOLE);
+		if (hole == -1) {
+			error = errno;
+			(void) close(fd);
+			return (error);
+		}
+
+		if (hole > file_size)
+			hole = file_size;
+
+		off = hole;
+	}
+
+	*count = hole_bytes / ss.st_blksize;
+	if (bs != NULL)
+		*bs = ss.st_blksize;
+
+	if (close(fd) == -1)
+		return (errno);
+
+	return (0);
+#else
+	(void) path;
+	(void) count;
+	(void) bs;
+	return (ENOTSUP);
+#endif
 }
 
 /*

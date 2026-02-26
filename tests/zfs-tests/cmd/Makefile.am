@@ -49,12 +49,14 @@ scripts_zfs_tests_bin_PROGRAMS += %D%/draid
 	libnvpair.la
 %C%_draid_LDADD += $(ZLIB_LIBS)
 
+if BUILD_LINUX
 scripts_zfs_tests_bin_PROGRAMS += %D%/fiemap
 %C%_fiemap_CPPFLAGS = $(AM_CPPFLAGS) $(LIBZPOOL_CPPFLAGS)
 %C%_fiemap_CFLAGS = $(AM_CFLAGS) $(ZLIB_CFLAGS)
 %C%_fiemap_LDADD = \
 	libavl.la \
 	libzpool.la
+endif
 
 dist_noinst_DATA += %D%/file/file_common.h
 scripts_zfs_tests_bin_PROGRAMS += %D%/file_append %D%/file_check %D%/file_trunc %D%/file_write %D%/largest_file %D%/randwritecomp

@@ -79,10 +79,17 @@ SUBSTFILES += $(nobase_nodist_datadir_zfs_tests_tests_DATA) $(nobase_nodist_data
 
 if BUILD_LINUX
 nobase_dist_datadir_zfs_tests_tests_SCRIPTS += \
+	functional/fiemap/fiemap_brt.ksh \
+	functional/fiemap/fiemap_concurrent.ksh \
+	functional/fiemap/fiemap_embedded.ksh \
+	functional/fiemap/fiemap_large_file.ksh \
+	functional/fiemap/fiemap_partial.ksh \
+	functional/fiemap/fiemap_sync_noop.ksh \
+	\
+	functional/luks/luks_sanity.ksh \
 	functional/simd/simd_supported.ksh \
 	functional/tmpfile/cleanup.ksh \
-	functional/tmpfile/setup.ksh \
-	functional/luks/luks_sanity.ksh
+	functional/tmpfile/setup.ksh
 endif
 
 nobase_dist_datadir_zfs_tests_tests_DATA += \
