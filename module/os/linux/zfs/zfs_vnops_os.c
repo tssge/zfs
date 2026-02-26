@@ -56,6 +56,7 @@
 #include <sys/spa.h>
 #include <sys/txg.h>
 #include <sys/brt.h>
+#include <sys/vdev_impl.h>
 #include <sys/dbuf.h>
 #include <sys/zap.h>
 #include <sys/sa.h>
@@ -4403,12 +4404,121 @@ zfs_fid(struct inode *ip, fid_t *fidp)
  * Convert the provided block pointer in to an extent.  This may result in
  * a new extent being created or an existing extent being extended.
  */
+typedef struct zfs_fiemap_remap_segment {
+	avl_node_t		frs_node;
+	uint64_t		frs_split_offset;
+	uint64_t		frs_vdev;
+	uint64_t		frs_physical_start;
+	uint64_t		frs_physical_len;
+} zfs_fiemap_remap_segment_t;
+
+static int
+zfs_fiemap_remap_segment_compare(const void *x1, const void *x2)
+{
+	const zfs_fiemap_remap_segment_t *s1 = x1;
+	const zfs_fiemap_remap_segment_t *s2 = x2;
+
+	return (TREE_CMP(s1->frs_split_offset, s2->frs_split_offset));
+}
+
+static void
+zfs_fiemap_add_remap_segment(uint64_t split_offset, vdev_t *vd,
+    uint64_t offset, uint64_t size, void *arg)
+{
+	avl_tree_t *segments = arg;
+	zfs_fiemap_remap_segment_t *segment, key;
+	avl_index_t idx;
+
+	/*
+	 * Skip intermediate indirect vdev callbacks and only record
+	 * concrete remap segments.
+	 */
+	if (vd->vdev_ops == &vdev_indirect_ops)
+		return;
+
+	key.frs_split_offset = split_offset;
+	if (avl_find(segments, &key, &idx) != NULL)
+		return;
+
+	segment = kmem_zalloc(sizeof (*segment), KM_SLEEP);
+	segment->frs_split_offset = split_offset;
+	segment->frs_vdev = vd->vdev_id;
+	segment->frs_physical_start = offset;
+	segment->frs_physical_len = size;
+	avl_insert(segments, segment, idx);
+}
+
+static void
+zfs_fiemap_free_remap_segments(avl_tree_t *segments)
+{
+	zfs_fiemap_remap_segment_t *segment;
+
+	while ((segment = avl_first(segments)) != NULL) {
+		avl_remove(segments, segment);
+		kmem_free(segment, sizeof (*segment));
+	}
+	avl_destroy(segments);
+}
+
+static void
+zfs_fiemap_insert_extent(zfs_fiemap_t *fm, int idx, zfs_fiemap_entry_t *fe,
+    boolean_t is_hole, boolean_t is_embedded)
+{
+	zfs_fiemap_entry_t *pfe;
+	avl_index_t where;
+
+	pfe = avl_last(&fm->fm_extent_trees[idx]);
+	if (pfe != NULL && !is_embedded &&
+	    !(fm->fm_flags & FIEMAP_FLAG_NOMERGE) &&
+	    pfe->fe_logical_start + pfe->fe_logical_len ==
+	    fe->fe_logical_start) {
+		if (is_hole && fe->fe_flags ==
+		    (pfe->fe_flags & ~FIEMAP_EXTENT_MERGED)) {
+			pfe->fe_logical_len += fe->fe_logical_len;
+			pfe->fe_flags |= FIEMAP_EXTENT_MERGED;
+			kmem_free(fe, sizeof (*fe));
+			return;
+		}
+
+		if (!is_hole && fe->fe_flags ==
+		    (pfe->fe_flags & ~FIEMAP_EXTENT_MERGED) &&
+		    fe->fe_physical_start ==
+		    pfe->fe_physical_start + pfe->fe_physical_len &&
+		    fe->fe_vdev == pfe->fe_vdev) {
+			pfe->fe_logical_len += fe->fe_logical_len;
+			pfe->fe_physical_len += fe->fe_physical_len;
+			pfe->fe_flags |= FIEMAP_EXTENT_MERGED;
+			kmem_free(fe, sizeof (*fe));
+			return;
+		}
+	}
+
+	/*
+	 * The FIEMAP documentation specifies that all encrypted extents
+	 * must also set the encoded flag.
+	 */
+	if (fe->fe_flags & FIEMAP_EXTENT_DATA_ENCRYPTED)
+		fe->fe_flags |= FIEMAP_EXTENT_ENCODED;
+
+	/*
+	 * Add the new extent to the copies tree.  This should never
+	 * conflict with an existing logical extent, but is handled
+	 * none the less by discarding the overlapping extent.
+	 */
+	if (avl_find(&fm->fm_extent_trees[idx], fe, &where) == NULL) {
+		avl_insert(&fm->fm_extent_trees[idx], fe, where);
+	} else {
+		kmem_free(fe, sizeof (*fe));
+	}
+}
+
 static int
 zfs_fiemap_cb(spa_t *spa, zilog_t *zilog, const blkptr_t *bp,
     const zbookmark_phys_t *zb, const dnode_phys_t *dnp, void *arg)
 {
 	zfs_fiemap_t *fm = (zfs_fiemap_t *)arg;
 	blkptr_t bp_copy = *bp;
+	boolean_t bp_remapped = B_FALSE;
 
 	if (BP_GET_LEVEL(bp) != 0)
 		return (0);
@@ -4431,13 +4541,14 @@ zfs_fiemap_cb(spa_t *spa, zilog_t *zilog, const blkptr_t *bp,
 	 * the fiemap interface so no additional extent flags are set.
 	 */
 	spa_config_enter(spa, SCL_VDEV, FTAG, RW_READER);
-	if (spa_remap_blkptr(spa, &bp_copy, NULL, NULL))
+	if (spa_remap_blkptr(spa, &bp_copy, NULL, NULL)) {
+		bp_remapped = B_TRUE;
 		bp = &bp_copy;
+	}
 	spa_config_exit(spa, SCL_VDEV, FTAG);
 
 	for (int i = 0; i < fm->fm_copies; i++) {
-		zfs_fiemap_entry_t *fe, *pfe;
-		avl_index_t idx;
+		zfs_fiemap_entry_t *fe;
 
 		/*
 		 * N.B. Embedded block pointers and holes are only added to
@@ -4478,6 +4589,9 @@ zfs_fiemap_cb(spa_t *spa, zilog_t *zilog, const blkptr_t *bp,
 			if (BP_GET_COMPRESS(bp) != ZIO_COMPRESS_OFF)
 				fe->fe_flags |= FIEMAP_EXTENT_ENCODED;
 		} else {
+			boolean_t brt_maybe;
+			boolean_t emitted_split = B_FALSE;
+
 			if (i >= BP_GET_NDVAS(bp)) {
 				kmem_free(fe, sizeof (zfs_fiemap_entry_t));
 				continue;
@@ -4507,7 +4621,8 @@ zfs_fiemap_cb(spa_t *spa, zilog_t *zilog, const blkptr_t *bp,
 			 * ~150 us per cold miss (SSD read on special vdev),
 			 * ~2 us per warm ARC hit.
 			 */
-			if (brt_maybe_exists(spa, bp)) {
+			brt_maybe = brt_maybe_exists(spa, bp);
+			if (brt_maybe) {
 				uint64_t refcnt =
 				    brt_entry_get_refcount(spa, bp);
 				if (refcnt > 0)
@@ -4526,6 +4641,131 @@ zfs_fiemap_cb(spa_t *spa, zilog_t *zilog, const blkptr_t *bp,
 				fe->fe_physical_len = 0;
 				fe->fe_vdev = 0;
 			} else {
+				/*
+				 * If spa_remap_blkptr() was unable to remap a
+				 * non-gang/non-dedup/non-cloned data block, it
+				 * may be split by an indirect mapping.  Emit one
+				 * FIEMAP extent per concrete remap segment.
+				 *
+				 * For now this is limited to lsize==psize blocks
+				 * to avoid ambiguous logical split sizing for
+				 * compressed blocks.
+				 */
+				if (!bp_remapped && i == 0 && !BP_GET_DEDUP(bp) &&
+				    (BP_IS_METADATA(bp) || !brt_maybe) &&
+				    DVA_IS_VALID(&bp->blk_dva[i]) &&
+				    BP_GET_LSIZE(bp) == BP_GET_PSIZE(bp)) {
+					avl_tree_t segments;
+					zfs_fiemap_remap_segment_t *segment;
+					uint64_t logical_base, logical_limit;
+					uint64_t offset, asize;
+					vdev_t *vd;
+					int split_count = 0;
+
+					offset = DVA_GET_OFFSET(&bp->blk_dva[i]);
+					asize = DVA_GET_ASIZE(&bp->blk_dva[i]);
+					logical_base = fe->fe_logical_start;
+					logical_limit = logical_base +
+					    BP_GET_LSIZE(bp);
+
+					avl_create(&segments,
+					    zfs_fiemap_remap_segment_compare,
+					    sizeof (zfs_fiemap_remap_segment_t),
+					    offsetof(zfs_fiemap_remap_segment_t,
+					    frs_node));
+
+					spa_config_enter(spa, SCL_VDEV, FTAG,
+					    RW_READER);
+					/*
+					 * vdev_indirect_remap() asserts that
+					 * some spa config lock is held as a
+					 * reader (via SCL_ALL mask).
+					 */
+					vd = vdev_lookup_top(spa,
+					    DVA_GET_VDEV(&bp->blk_dva[i]));
+					if (vd != NULL &&
+					    vd->vdev_ops->vdev_op_remap != NULL &&
+					    asize != 0) {
+						vd->vdev_ops->vdev_op_remap(vd,
+						    offset, asize,
+						    zfs_fiemap_add_remap_segment,
+						    &segments);
+					}
+					spa_config_exit(spa, SCL_VDEV, FTAG);
+
+					for (segment = avl_first(&segments);
+					    segment != NULL;
+					    segment = AVL_NEXT(&segments,
+					    segment)) {
+						split_count++;
+					}
+
+					if (split_count > 1) {
+						uint64_t split_flags =
+						    fe->fe_flags;
+						int emitted = 0;
+
+						for (segment = avl_first(&segments);
+						    segment != NULL;
+						    segment = AVL_NEXT(
+						    &segments, segment)) {
+							uint64_t seg_logical_start =
+							    logical_base +
+							    segment->
+							    frs_split_offset;
+							uint64_t seg_logical_len =
+							    segment->
+							    frs_physical_len;
+							zfs_fiemap_entry_t *sfe;
+
+							if (seg_logical_start >=
+							    logical_limit)
+								continue;
+							if (seg_logical_len >
+							    logical_limit -
+							    seg_logical_start) {
+								seg_logical_len =
+								    logical_limit -
+								    seg_logical_start;
+							}
+							if (seg_logical_len == 0)
+								continue;
+
+							sfe = kmem_zalloc(
+							    sizeof (*sfe),
+							    KM_SLEEP);
+							sfe->fe_logical_start =
+							    seg_logical_start;
+							sfe->fe_logical_len =
+							    seg_logical_len;
+							sfe->fe_physical_start =
+							    segment->
+							    frs_physical_start;
+							sfe->fe_physical_len =
+							    segment->
+							    frs_physical_len;
+							sfe->fe_vdev =
+							    segment->frs_vdev;
+							sfe->fe_flags =
+							    split_flags;
+							zfs_fiemap_insert_extent(
+							    fm, i, sfe, B_FALSE,
+							    B_FALSE);
+							emitted++;
+						}
+						emitted_split = (emitted > 0);
+					}
+
+					zfs_fiemap_free_remap_segments(
+					    &segments);
+				}
+
+				if (emitted_split) {
+					kmem_free(fe,
+					    sizeof (zfs_fiemap_entry_t));
+					continue;
+				}
+
 				fe->fe_physical_len = BP_GET_PSIZE(bp);
 
 				if (DVA_IS_VALID(&bp->blk_dva[i])) {
@@ -4539,57 +4779,8 @@ zfs_fiemap_cb(spa_t *spa, zilog_t *zilog, const blkptr_t *bp,
 			fe->fe_logical_len = BP_GET_LSIZE(bp);
 		}
 
-		/*
-		 * By default merge compatible adjacent block pointers in to a
-		 * single extent.  Embedded block pointers can never be merged.
-		 *
-		 * N.B. Block pointers provided by the iterator will always
-		 * be in logical offset order.  Therefore, it is sufficient
-		 * to check only the previously inserted entry when merging.
-		 */
-		pfe = avl_last(&fm->fm_extent_trees[i]);
-		if (pfe != NULL && !BP_IS_EMBEDDED(bp) &&
-		    !(fm->fm_flags & FIEMAP_FLAG_NOMERGE) &&
-		    pfe->fe_logical_start + pfe->fe_logical_len ==
-		    fe->fe_logical_start) {
-			if (BP_IS_HOLE(bp) && fe->fe_flags ==
-			    (pfe->fe_flags & ~FIEMAP_EXTENT_MERGED)) {
-				pfe->fe_logical_len += fe->fe_logical_len;
-				pfe->fe_flags |= FIEMAP_EXTENT_MERGED;
-				kmem_free(fe, sizeof (zfs_fiemap_entry_t));
-				continue;
-			}
-
-			if (!BP_IS_HOLE(bp) && fe->fe_flags ==
-			    (pfe->fe_flags & ~FIEMAP_EXTENT_MERGED) &&
-			    fe->fe_physical_start ==
-			    pfe->fe_physical_start + pfe->fe_physical_len &&
-			    fe->fe_vdev == pfe->fe_vdev) {
-				pfe->fe_logical_len += fe->fe_logical_len;
-				pfe->fe_physical_len += fe->fe_physical_len;
-				pfe->fe_flags |= FIEMAP_EXTENT_MERGED;
-				kmem_free(fe, sizeof (zfs_fiemap_entry_t));
-				continue;
-			}
-		}
-
-		/*
-		 * The FIEMAP documentation specifies that all encrypted
-		 * extents must also set the encoded flag.
-		 */
-		if (fe->fe_flags & FIEMAP_EXTENT_DATA_ENCRYPTED)
-			fe->fe_flags |= FIEMAP_EXTENT_ENCODED;
-
-		/*
-		 * Add the new extent to the copies tree.  This should never
-		 * conflict with an existing logical extent, but is handled
-		 * none the less by discarding the overlapping extent.
-		 */
-		if (avl_find(&fm->fm_extent_trees[i], fe, &idx) == NULL) {
-			avl_insert(&fm->fm_extent_trees[i], fe, idx);
-		} else {
-			kmem_free(fe, sizeof (zfs_fiemap_entry_t));
-		}
+		zfs_fiemap_insert_extent(fm, i, fe, BP_IS_HOLE(bp),
+		    BP_IS_EMBEDDED(bp));
 	}
 
 	return (0);
@@ -5126,6 +5317,18 @@ zfs_fiemap_fill_next_extent(zfs_fiemap_t *fm, struct fiemap_extent_info *fei,
 {
 	boolean_t is_last = !!(flags & FIEMAP_EXTENT_LAST);
 	int error;
+	uint32_t export_flags = flags & ~ZFS_FIEMAP_HOLE;
+
+	/*
+	 * Extents can be block-size aligned in memory even if they
+	 * overrun EOF.  Clip robustly and drop fully out-of-range entries.
+	 */
+	if (logical_start >= fm->fm_file_size || logical_len == 0)
+		return (is_last ? SET_ERROR(ESRCH) : 0);
+	if (logical_len > fm->fm_file_size - logical_start)
+		logical_len = fm->fm_file_size - logical_start;
+	if (logical_len == 0)
+		return (is_last ? SET_ERROR(ESRCH) : 0);
 
 	if (fei->fi_extents_max == 0) {
 		fei->fi_extents_mapped++;
@@ -5135,17 +5338,13 @@ zfs_fiemap_fill_next_extent(zfs_fiemap_t *fm, struct fiemap_extent_info *fei,
 	if (fei->fi_extents_mapped >= fei->fi_extents_max)
 		return (SET_ERROR(ENOSPC));
 
-	uint64_t end = logical_start + logical_len;
-	if (end > fm->fm_file_size)
-		logical_len = logical_len - (end - fm->fm_file_size);
-
 	struct fiemap_extent extent;
 	memset(&extent, 0, sizeof (extent));
 	extent.fe_logical = logical_start;
 	extent.fe_physical = physical_start;
 	extent.fe_length = logical_len;
 	extent.fe_physical_length_reserved = physical_len;
-	extent.fe_flags = flags;
+	extent.fe_flags = export_flags;
 	extent.fe_device_reserved = device;
 
 	error = copy_to_user(fei->fi_extents_start + fei->fi_extents_mapped,

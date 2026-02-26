@@ -135,7 +135,8 @@ tags = ['functional', 'features', 'large_dnode']
 tests = ['fiemap_sync', 'fiemap_flags', 'fiemap_dealloc', 'fiemap_free',
     'fiemap_copies', 'fiemap_nomerge', 'fiemap_holes_sanity',
     'fiemap_embedded', 'fiemap_sync_noop', 'fiemap_partial',
-    'fiemap_brt', 'fiemap_concurrent', 'fiemap_large_file']
+    'fiemap_brt', 'fiemap_concurrent', 'fiemap_large_file',
+    'fiemap_split_remap']
 tags = ['functional', 'fiemap']
 
 [tests/functional/io:Linux]

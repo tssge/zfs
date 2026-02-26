@@ -76,14 +76,6 @@ typedef struct fiemap_args {
 static boolean_t
 fiemap_extent_is_hole(struct fiemap_extent *ext)
 {
-	/*
-	 * ZFS reports ZFS_FIEMAP_HOLE on hole extents (both synced holes
-	 * and pending-free holes).  This allows reliable hole detection
-	 * even when FIEMAP_EXTENT_DELALLOC is set on pending frees.
-	 */
-	if (ext->fe_flags & ZFS_FIEMAP_HOLE)
-		return (B_TRUE);
-
 	return (ext->fe_physical == 0 && ext->fe_physical_length_reserved == 0 &&
 	    !(ext->fe_flags & (FIEMAP_EXTENT_DATA_INLINE |
 	    FIEMAP_EXTENT_DATA_ENCRYPTED | FIEMAP_EXTENT_ENCODED |
@@ -172,7 +164,7 @@ fiemap_extent_flags_str(struct fiemap_extent *extent, char *str, int size)
 
 	if (flags & FIEMAP_EXTENT_LAST)
 		next += snprintf(next, size - (next - str), "last,");
-	if (flags & ZFS_FIEMAP_HOLE)
+	if (fiemap_extent_is_hole(extent))
 		next += snprintf(next, size - (next - str), "hole,");
 	if (flags & FIEMAP_EXTENT_UNKNOWN)
 		next += snprintf(next, size - (next - str), "unknown,");

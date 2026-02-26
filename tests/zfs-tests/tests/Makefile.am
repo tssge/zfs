@@ -84,6 +84,7 @@ nobase_dist_datadir_zfs_tests_tests_SCRIPTS += \
 	functional/fiemap/fiemap_embedded.ksh \
 	functional/fiemap/fiemap_large_file.ksh \
 	functional/fiemap/fiemap_partial.ksh \
+	functional/fiemap/fiemap_split_remap.ksh \
 	functional/fiemap/fiemap_sync_noop.ksh \
 	\
 	functional/luks/luks_sanity.ksh \
