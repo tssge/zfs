@@ -1,0 +1,74 @@
+#!/bin/ksh -p
+# SPDX-License-Identifier: CDDL-1.0
+#
+# Common library for bclone_dedup (zfs recv -B) tests.
+#
+
+. $STF_SUITE/include/libtest.shlib
+. $STF_SUITE/tests/functional/bclone_dedup/bclone_dedup.cfg
+
+#
+# Get the last bclone_dedup stats line from dbgmsg.
+# Returns: "hits misses deferred_misses bytes_cloned index_entries"
+#
+function get_bclone_dedup_stats
+{
+	typeset line
+	line=$(cat /proc/spl/kstat/zfs/dbgmsg 2>/dev/null | \
+	    grep "bclone_dedup:" | tail -1)
+	if [[ -z "$line" ]]; then
+		echo "0 0 0 0 0"
+		return
+	fi
+	typeset hits=$(echo "$line" | sed -n 's/.*: \([0-9]*\) hits.*/\1/p')
+	typeset misses=$(echo "$line" | \
+	    sed -n 's/.* \([0-9]*\) misses.*/\1/p')
+	typeset deferred=$(echo "$line" | \
+	    sed -n 's/.*(\([0-9]*\) deferred).*/\1/p')
+	typeset bytes=$(echo "$line" | \
+	    sed -n 's/.* \([0-9]*\) bytes cloned.*/\1/p')
+	typeset entries=$(echo "$line" | \
+	    sed -n 's/.* \([0-9]*\) index entries.*/\1/p')
+	echo "${hits:-0} ${misses:-0} ${deferred:-0} ${bytes:-0} ${entries:-0}"
+}
+
+#
+# Clear dbgmsg so previous test runs don't pollute stats.
+#
+function clear_bclone_dedup_stats
+{
+	echo 0 > /proc/spl/kstat/zfs/dbgmsg 2>/dev/null
+}
+
+#
+# Verify that bclonesaved on the pool is greater than zero.
+#
+function verify_bclonesaved
+{
+	typeset pool=$1
+	typeset saved
+	saved=$(get_pool_prop bcloneused "$pool")
+	if [[ "$saved" -gt 0 ]]; then
+		log_note "bclonesaved is $saved (> 0), as expected"
+		return 0
+	else
+		log_note "bclonesaved is $saved"
+		return 1
+	fi
+}
+
+#
+# Send a dataset/snapshot with given flags, receive with -B and optional
+# extra flags.  Verifies the receive succeeds.
+#
+# Usage: send_recv_bclone <send_flags> <snap> <recv_flags> <dest>
+#
+function send_recv_bclone
+{
+	typeset send_flags=$1
+	typeset snap=$2
+	typeset recv_flags=$3
+	typeset dest=$4
+
+	log_must eval "zfs send $send_flags $snap | zfs recv -B $recv_flags $dest"
+}

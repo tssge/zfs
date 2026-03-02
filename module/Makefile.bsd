@@ -249,6 +249,7 @@ SRCS+=	abd.c \
 	blake3_zfs.c \
 	blkptr.c \
 	bplist.c \
+	bclone_dedup.c \
 	bpobj.c \
 	bptree.c \
 	bqueue.c \

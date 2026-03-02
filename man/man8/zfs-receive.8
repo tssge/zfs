@@ -40,14 +40,14 @@
 .Sh SYNOPSIS
 .Nm zfs
 .Cm receive
-.Op Fl FhMnsuv
+.Op Fl BFhMnsuv
 .Op Fl o Sy origin Ns = Ns Ar snapshot
 .Op Fl o Ar property Ns = Ns Ar value
 .Op Fl x Ar property
 .Ar filesystem Ns | Ns Ar volume Ns | Ns Ar snapshot
 .Nm zfs
 .Cm receive
-.Op Fl FhMnsuv
+.Op Fl BFhMnsuv
 .Op Fl d Ns | Ns Fl e
 .Op Fl o Sy origin Ns = Ns Ar snapshot
 .Op Fl o Ar property Ns = Ns Ar value
@@ -68,7 +68,7 @@
 .It Xo
 .Nm zfs
 .Cm receive
-.Op Fl FhMnsuv
+.Op Fl BFhMnsuv
 .Op Fl o Sy origin Ns = Ns Ar snapshot
 .Op Fl o Ar property Ns = Ns Ar value
 .Op Fl x Ar property
@@ -77,7 +77,7 @@
 .It Xo
 .Nm zfs
 .Cm receive
-.Op Fl FhMnsuv
+.Op Fl BFhMnsuv
 .Op Fl d Ns | Ns Fl e
 .Op Fl o Sy origin Ns = Ns Ar snapshot
 .Op Fl o Ar property Ns = Ns Ar value
@@ -236,6 +236,47 @@ system name
 .Pq i.e. the name of the source file system itself
 is used as the target file system name.
 .Bl -tag -width "-F"
+.It Fl B
+Use block cloning to deduplicate incoming data against the existing contents
+of the destination dataset.
+An ephemeral in-memory checksum index is built from the destination's metadata
+before the receive begins, and incoming blocks whose checksums match are cloned
+via the Block Reference Table (BRT) instead of being re-written.
+.Pp
+This option requires:
+.Bl -bullet -compact
+.It
+A raw
+.Pq Fl w
+or compressed
+.Pq Fl c
+send stream.
+Uncompressed streams are rejected with
+.Er ENOTSUP .
+.It
+A cryptographic checksum on the destination dataset
+.Pq SHA-256, blake3, skein, or edon-r .
+Non-cryptographic checksums
+.Pq e.g. fletcher4
+are rejected with
+.Er ENOTSUP .
+.It
+The same checksum algorithm on both source and destination.
+If they differ, dedup is silently disabled and the receive proceeds normally
+without savings.
+.El
+.Pp
+The index memory is capped by the
+.Sy zfs_recv_bclone_dedup_max_bytes
+module parameter
+.Pq default 1 GB .
+.Pp
+Compatible with
+.Fl s
+.Pq resumable ;
+the flag is encoded in the resume token and the index is rebuilt on resume.
+.Pp
+Does not deduplicate across datasets.
 .It Fl F
 Force a rollback of the file system to the most recent snapshot before
 performing the receive operation.

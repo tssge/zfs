@@ -71,6 +71,16 @@ tests = ['bclone_crossfs_corner_cases_limited',
 tags = ['functional', 'bclone']
 timeout = 7200
 
+[tests/functional/bclone_dedup]
+tests = ['bclone_dedup_full_rerecv',
+    'bclone_dedup_intrastream',
+    'bclone_dedup_compressed',
+    'bclone_dedup_incremental',
+    'bclone_dedup_no_overlap',
+    'bclone_dedup_uncompressed_rejected',
+    'bclone_dedup_fletcher_noop']
+tags = ['functional', 'bclone_dedup']
+
 [tests/functional/block_cloning]
 tests = ['block_cloning_clone_mmap_cached',
     'block_cloning_copyfilerange',

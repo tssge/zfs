@@ -95,6 +95,8 @@ nobase_dist_datadir_zfs_tests_tests_DATA += \
 	functional/bclone/bclone.cfg \
 	functional/bclone/bclone_common.kshlib \
 	functional/bclone/bclone_corner_cases.kshlib \
+	functional/bclone_dedup/bclone_dedup.cfg \
+	functional/bclone_dedup/bclone_dedup.kshlib \
 	functional/block_cloning/block_cloning.kshlib \
 	functional/cache/cache.cfg \
 	functional/cache/cache.kshlib \
@@ -471,6 +473,15 @@ nobase_dist_datadir_zfs_tests_tests_SCRIPTS += \
 	functional/bclone/bclone_samefs_hole.ksh \
 	functional/bclone/cleanup.ksh \
 	functional/bclone/setup.ksh \
+	functional/bclone_dedup/cleanup.ksh \
+	functional/bclone_dedup/setup.ksh \
+	functional/bclone_dedup/bclone_dedup_full_rerecv.ksh \
+	functional/bclone_dedup/bclone_dedup_intrastream.ksh \
+	functional/bclone_dedup/bclone_dedup_compressed.ksh \
+	functional/bclone_dedup/bclone_dedup_incremental.ksh \
+	functional/bclone_dedup/bclone_dedup_no_overlap.ksh \
+	functional/bclone_dedup/bclone_dedup_uncompressed_rejected.ksh \
+	functional/bclone_dedup/bclone_dedup_fletcher_noop.ksh \
 	functional/block_cloning/cleanup.ksh \
 	functional/block_cloning/setup.ksh \
 	functional/block_cloning/block_cloning_clone_mmap_cached.ksh \

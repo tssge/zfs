@@ -70,6 +70,8 @@
 #endif
 #include <sys/zfs_file.h>
 #include <sys/cred.h>
+#include <sys/bclone_dedup.h>
+#include <sys/txg.h>
 
 static uint_t zfs_recv_queue_length = SPA_MAXBLOCKSIZE;
 static uint_t zfs_recv_queue_ff = 20;
@@ -141,6 +143,12 @@ struct receive_writer_arg {
 
 	/* Keep track of DRR_FREEOBJECTS right after DRR_OBJECT_RANGE */
 	or_need_sync_t or_need_sync;
+
+	/* Block clone dedup state */
+	boolean_t bclone_dedup;
+	enum zio_checksum bclone_dst_cksum;  /* resolved dest checksum algo */
+	bclone_dedup_index_t *bdi;           /* NULL when disabled */
+	boolean_t bdi_synced_once;           /* txg synced for deferred BPs */
 };
 
 typedef struct dmu_recv_begin_arg {
@@ -965,6 +973,11 @@ dmu_recv_begin_sync(void *arg, dmu_tx_t *tx)
 			VERIFY0(zap_add(mos, dsobj, DS_FIELD_RESUME_RAWOK,
 			    8, 1, &one, tx));
 		}
+		if (drc->drc_bclone_dedup) {
+			VERIFY0(zap_add(mos, dsobj,
+			    DS_FIELD_RESUME_BCLONE_DEDUP,
+			    8, 1, &one, tx));
+		}
 
 		uint64_t *redact_snaps;
 		uint_t numredactsnaps;
@@ -1275,9 +1288,9 @@ dmu_recv_resume_begin_sync(void *arg, dmu_tx_t *tx)
 int
 dmu_recv_begin(const char *tofs, const char *tosnap,
     dmu_replay_record_t *drr_begin, boolean_t force, boolean_t heal,
-    boolean_t resumable, nvlist_t *localprops, nvlist_t *hidden_args,
-    const char *origin, dmu_recv_cookie_t *drc, zfs_file_t *fp,
-    offset_t *voffp)
+    boolean_t resumable, boolean_t bclone_dedup, nvlist_t *localprops,
+    nvlist_t *hidden_args, const char *origin, dmu_recv_cookie_t *drc,
+    zfs_file_t *fp, offset_t *voffp)
 {
 	dmu_recv_begin_arg_t drba = { 0 };
 	int err = 0;
@@ -1293,6 +1306,7 @@ dmu_recv_begin(const char *tofs, const char *tosnap,
 	drc->drc_force = force;
 	drc->drc_heal = heal;
 	drc->drc_resumable = resumable;
+	drc->drc_bclone_dedup = bclone_dedup;
 	drc->drc_cred = cr;
 	drc->drc_clone = (origin != NULL);
 
@@ -2267,6 +2281,7 @@ flush_write_batch_impl(struct receive_writer_arg *rwa)
 	while ((rrd = list_head(&rwa->write_batch)) != NULL) {
 		struct drr_write *drrw = &rrd->header.drr_u.drr_write;
 		abd_t *abd = rrd->abd;
+		boolean_t bclone_cloned = B_FALSE;
 
 		ASSERT3U(drrw->drr_object, ==, rwa->last_object);
 
@@ -2311,62 +2326,157 @@ flush_write_batch_impl(struct receive_writer_arg *rwa)
 			if (err == 0)
 				abd_free(abd);
 		} else {
-			zio_prop_t zp = {0};
-			dmu_write_policy(rwa->os, dn, 0, 0, &zp);
+			/*
+			 * Block clone dedup: try to clone instead of write.
+			 * Only attempt when the record carries a valid
+			 * checksum and the algorithm matches the destination.
+			 */
+			if (rwa->bclone_dedup && rwa->bdi != NULL &&
+			    drrw->drr_checksumtype != ZIO_CHECKSUM_OFF &&
+			    drrw->drr_checksumtype ==
+			    rwa->bclone_dst_cksum) {
+				uint32_t lsize =
+				    DDK_GET_LSIZE(&drrw->drr_key);
+				uint32_t psize =
+				    DDK_GET_PSIZE(&drrw->drr_key);
+				uint8_t compress =
+				    DDK_GET_COMPRESS(&drrw->drr_key);
 
-			zio_flag_t zio_flags = 0;
+				bdi_entry_t *match = bdi_lookup_entry(
+				    rwa->bdi, &drrw->drr_key.ddk_cksum,
+				    drrw->drr_checksumtype,
+				    compress, lsize, psize);
 
-			if (rwa->raw) {
-				zp.zp_encrypt = B_TRUE;
-				zp.zp_compress = drrw->drr_compressiontype;
-				zp.zp_byteorder = ZFS_HOST_BYTEORDER ^
-				    !!DRR_IS_RAW_BYTESWAPPED(drrw->drr_flags) ^
-				    rwa->byteswap;
-				memcpy(zp.zp_salt, drrw->drr_salt,
-				    ZIO_DATA_SALT_LEN);
-				memcpy(zp.zp_iv, drrw->drr_iv,
-				    ZIO_DATA_IV_LEN);
-				memcpy(zp.zp_mac, drrw->drr_mac,
-				    ZIO_DATA_MAC_LEN);
-				if (DMU_OT_IS_ENCRYPTED(zp.zp_type)) {
-					zp.zp_nopwrite = B_FALSE;
-					zp.zp_copies = MIN(zp.zp_copies,
-					    SPA_DVAS_PER_BP - 1);
-					zp.zp_gang_copies =
-					    MIN(zp.zp_gang_copies,
-					    SPA_DVAS_PER_BP - 1);
+				if (match != NULL) {
+					blkptr_t clone_bp;
+					boolean_t can_clone = B_FALSE;
+
+					if (!match->bdie_deferred) {
+						clone_bp = match->bdie_bp;
+						can_clone = B_TRUE;
+					} else {
+						/*
+						 * Deferred entry from earlier
+						 * in this stream.  Try to
+						 * resolve via dmu_read_l0_bps.
+						 */
+						size_t nbps = 1;
+						int bperr = dmu_read_l0_bps(
+						    rwa->os,
+						    match->bdie_object,
+						    match->bdie_offset,
+						    match->bdie_lsize,
+						    &clone_bp, &nbps);
+						if (bperr == 0 && nbps == 1 &&
+						    !BP_IS_HOLE(&clone_bp)) {
+							match->bdie_bp =
+							    clone_bp;
+							match->bdie_deferred =
+							    0;
+							can_clone = B_TRUE;
+						} else {
+							rwa->bdi->
+							    bdi_deferred_misses
+							    ++;
+						}
+					}
+
+					if (can_clone) {
+						err = dmu_brt_clone(rwa->os,
+						    drrw->drr_object,
+						    drrw->drr_offset,
+						    drrw->drr_logical_size,
+						    tx, &clone_bp, 1);
+						if (err == 0) {
+							abd_free(abd);
+							rwa->bdi->bdi_hits++;
+							rwa->bdi->
+							    bdi_cloned_bytes +=
+							    drrw->
+							    drr_logical_size;
+							bclone_cloned =
+							    B_TRUE;
+						} else if (err == EXDEV ||
+						    err == ENOSPC ||
+						    err == EIO) {
+							err = 0;
+						}
+					} else if (!can_clone) {
+						rwa->bdi->bdi_misses++;
+					}
+				} else {
+					rwa->bdi->bdi_misses++;
 				}
-				zio_flags |= ZIO_FLAG_RAW;
-			} else if (DRR_WRITE_COMPRESSED(drrw)) {
-				ASSERT3U(drrw->drr_compressed_size, >, 0);
-				ASSERT3U(drrw->drr_logical_size, >=,
-				    drrw->drr_compressed_size);
-				zp.zp_compress = drrw->drr_compressiontype;
-				zio_flags |= ZIO_FLAG_RAW_COMPRESS;
-			} else if (rwa->byteswap) {
-				/*
-				 * Note: compressed blocks never need to be
-				 * byteswapped, because WRITE records for
-				 * metadata blocks are never compressed. The
-				 * exception is raw streams, which are written
-				 * in the original byteorder, and the byteorder
-				 * bit is preserved in the BP by setting
-				 * zp_byteorder above.
-				 */
-				dmu_object_byteswap_t byteswap =
-				    DMU_OT_BYTESWAP(drrw->drr_type);
-				dmu_ot_byteswap[byteswap].ob_func(
-				    abd_to_buf(abd),
-				    DRR_WRITE_PAYLOAD_SIZE(drrw));
+			} else if (rwa->bclone_dedup && rwa->bdi != NULL) {
+				rwa->bdi->bdi_misses++;
 			}
 
-			/*
-			 * Since this data can't be read until the receive
-			 * completes, we can do a "lightweight" write for
-			 * improved performance.
-			 */
-			err = dmu_lightweight_write_by_dnode(dn,
-			    drrw->drr_offset, abd, &zp, zio_flags, tx);
+			if (!bclone_cloned && err == 0) {
+				zio_prop_t zp = {0};
+				dmu_write_policy(rwa->os, dn, 0, 0, &zp);
+
+				zio_flag_t zio_flags = 0;
+
+				if (rwa->raw) {
+					zp.zp_encrypt = B_TRUE;
+					zp.zp_compress =
+					    drrw->drr_compressiontype;
+					zp.zp_byteorder =
+					    ZFS_HOST_BYTEORDER ^
+					    !!DRR_IS_RAW_BYTESWAPPED(
+					    drrw->drr_flags) ^
+					    rwa->byteswap;
+					memcpy(zp.zp_salt, drrw->drr_salt,
+					    ZIO_DATA_SALT_LEN);
+					memcpy(zp.zp_iv, drrw->drr_iv,
+					    ZIO_DATA_IV_LEN);
+					memcpy(zp.zp_mac, drrw->drr_mac,
+					    ZIO_DATA_MAC_LEN);
+					if (DMU_OT_IS_ENCRYPTED(zp.zp_type)) {
+						zp.zp_nopwrite = B_FALSE;
+						zp.zp_copies =
+						    MIN(zp.zp_copies,
+						    SPA_DVAS_PER_BP - 1);
+						zp.zp_gang_copies =
+						    MIN(zp.zp_gang_copies,
+						    SPA_DVAS_PER_BP - 1);
+					}
+					zio_flags |= ZIO_FLAG_RAW;
+				} else if (DRR_WRITE_COMPRESSED(drrw)) {
+					ASSERT3U(drrw->drr_compressed_size,
+					    >, 0);
+					ASSERT3U(drrw->drr_logical_size, >=,
+					    drrw->drr_compressed_size);
+					zp.zp_compress =
+					    drrw->drr_compressiontype;
+					zio_flags |= ZIO_FLAG_RAW_COMPRESS;
+				} else if (rwa->byteswap) {
+					/*
+					 * Note: compressed blocks never need
+					 * to be byteswapped, because WRITE
+					 * records for metadata blocks are
+					 * never compressed. The exception is
+					 * raw streams, which are written in
+					 * the original byteorder, and the
+					 * byteorder bit is preserved in the
+					 * BP by setting zp_byteorder above.
+					 */
+					dmu_object_byteswap_t byteswap =
+					    DMU_OT_BYTESWAP(drrw->drr_type);
+					dmu_ot_byteswap[byteswap].ob_func(
+					    abd_to_buf(abd),
+					    DRR_WRITE_PAYLOAD_SIZE(drrw));
+				}
+
+				/*
+				 * Since this data can't be read until the
+				 * receive completes, we can do a "lightweight"
+				 * write for improved performance.
+				 */
+				err = dmu_lightweight_write_by_dnode(dn,
+				    drrw->drr_offset, abd, &zp, zio_flags,
+				    tx);
+			}
 		}
 
 		if (err != 0) {
@@ -2375,6 +2485,24 @@ flush_write_batch_impl(struct receive_writer_arg *rwa)
 			 * free it (and the abd).
 			 */
 			break;
+		}
+
+		/*
+		 * Intra-stream dedup: after writing a block normally,
+		 * insert a deferred entry so later identical blocks in
+		 * the same stream can be cloned once this txg syncs.
+		 */
+		if (rwa->bclone_dedup && rwa->bdi != NULL &&
+		    !bclone_cloned &&
+		    drrw->drr_checksumtype != ZIO_CHECKSUM_OFF &&
+		    drrw->drr_checksumtype == rwa->bclone_dst_cksum) {
+			bdi_insert_deferred(rwa->bdi,
+			    &drrw->drr_key.ddk_cksum,
+			    drrw->drr_checksumtype,
+			    DDK_GET_COMPRESS(&drrw->drr_key),
+			    DDK_GET_LSIZE(&drrw->drr_key),
+			    DDK_GET_PSIZE(&drrw->drr_key),
+			    drrw->drr_object, drrw->drr_offset);
 		}
 
 		/*
@@ -2391,6 +2519,25 @@ flush_write_batch_impl(struct receive_writer_arg *rwa)
 
 	dmu_tx_commit(tx);
 	dnode_rele(dn, FTAG);
+
+	/*
+	 * Intra-stream dedup: if we encountered deferred entries that
+	 * couldn't be resolved (their txgs haven't synced yet), force a
+	 * one-time txg sync.  After this, all previously-written blocks
+	 * will have on-disk BPs that dmu_read_l0_bps() can return.
+	 * Subsequent batches will be able to clone from those BPs.
+	 *
+	 * We only do this once per recv — after the sync, any new deferred
+	 * entries from THIS batch will be in a new txg that will naturally
+	 * sync before the next time we need them (or they'll be resolved
+	 * on the next encounter with the same one-time-sync pattern).
+	 */
+	if (err == 0 && rwa->bdi != NULL &&
+	    rwa->bdi->bdi_deferred_misses > 0 && !rwa->bdi_synced_once) {
+		txg_wait_synced(dmu_objset_pool(rwa->os), 0);
+		rwa->bdi_synced_once = B_TRUE;
+	}
+
 	return (err);
 }
 
@@ -3352,6 +3499,13 @@ dmu_recv_stream(dmu_recv_cookie_t *drc, offset_t *voffp)
 		    drc->drc_ds->ds_object, DS_FIELD_RESUME_BYTES,
 		    sizeof (bytes), 1, &bytes);
 		drc->drc_bytes_read += bytes;
+
+		/* Recover bclone_dedup flag from resume state */
+		if (zap_contains(drc->drc_ds->ds_dir->dd_pool->dp_meta_objset,
+		    drc->drc_ds->ds_object,
+		    DS_FIELD_RESUME_BCLONE_DEDUP) == 0) {
+			drc->drc_bclone_dedup = B_TRUE;
+		}
 	}
 
 	drc->drc_ignore_objlist = objlist_create();
@@ -3424,6 +3578,55 @@ dmu_recv_stream(dmu_recv_cookie_t *drc, offset_t *voffp)
 	 */
 	drc->drc_should_save = B_TRUE;
 
+	/*
+	 * Block clone dedup: use the pre-built checksum index from
+	 * zfs_ioc_recv_impl() (stored in drc->drc_bdi).  The index was
+	 * built from the original destination dataset before dmu_recv_begin
+	 * created the temporary recv clone, so it contains the blocks we
+	 * want to dedup against.
+	 *
+	 * We still need to validate the stream type here (raw/compressed).
+	 * This must happen before bqueue/cv/mutex init so goto out is safe.
+	 */
+	if (drc->drc_bclone_dedup) {
+		if (!(drc->drc_featureflags & DMU_BACKUP_FEATURE_RAW) &&
+		    !(drc->drc_featureflags & DMU_BACKUP_FEATURE_COMPRESSED)) {
+			err = SET_ERROR(ENOTSUP);
+			goto out;
+		}
+		if (drc->drc_bdi != NULL) {
+			rwa->bdi = drc->drc_bdi;
+			drc->drc_bdi = NULL; /* ownership transferred to rwa */
+		} else {
+			/*
+			 * No pre-built index (e.g., resume case where the
+			 * flag was recovered from ZAP).  Build from the
+			 * original destination dataset via dmu_objset_hold,
+			 * which safely acquires the pool config lock.
+			 */
+			rwa->bdi = bdi_create(zfs_recv_bclone_dedup_max_bytes);
+			objset_t *bdi_os;
+			err = dmu_objset_hold(drc->drc_tofs, FTAG, &bdi_os);
+			if (err == 0) {
+				err = bdi_populate_from_dataset(rwa->bdi,
+				    dmu_objset_ds(bdi_os));
+				dmu_objset_rele(bdi_os, FTAG);
+				if (err != 0) {
+					bdi_destroy(rwa->bdi);
+					rwa->bdi = NULL;
+					goto out;
+				}
+			} else if (err == ENOENT) {
+				err = 0;
+			} else {
+				bdi_destroy(rwa->bdi);
+				rwa->bdi = NULL;
+				goto out;
+			}
+		}
+		rwa->bclone_dedup = B_TRUE;
+	}
+
 	(void) bqueue_init(&rwa->q, zfs_recv_queue_ff,
 	    MAX(zfs_recv_queue_length, 2 * zfs_max_recordsize),
 	    offsetof(struct receive_record_arg, node));
@@ -3444,6 +3647,16 @@ dmu_recv_stream(dmu_recv_cookie_t *drc, offset_t *voffp)
 	}
 	list_create(&rwa->write_batch, sizeof (struct receive_record_arg),
 	    offsetof(struct receive_record_arg, node.bqn_node));
+
+	/*
+	 * Resolve destination checksum algorithm once (after rwa->os is set).
+	 * Pass NULL for dnode to get the dataset default.
+	 */
+	if (rwa->bclone_dedup) {
+		zio_prop_t zp_dst;
+		dmu_write_policy(drc->drc_os, NULL, 0, 0, &zp_dst);
+		rwa->bclone_dst_cksum = zp_dst.zp_checksum;
+	}
 
 	(void) thread_create(NULL, 0, receive_writer_thread, rwa, 0, curproc,
 	    TS_RUN, minclsyspri);
@@ -3527,6 +3740,19 @@ dmu_recv_stream(dmu_recv_cookie_t *drc, offset_t *voffp)
 		}
 	}
 
+	if (rwa->bdi != NULL) {
+		zfs_dbgmsg("bclone_dedup: %llu hits, %llu misses "
+		    "(%llu deferred), %llu bytes cloned, "
+		    "%llu index entries",
+		    (u_longlong_t)rwa->bdi->bdi_hits,
+		    (u_longlong_t)rwa->bdi->bdi_misses,
+		    (u_longlong_t)rwa->bdi->bdi_deferred_misses,
+		    (u_longlong_t)rwa->bdi->bdi_cloned_bytes,
+		    (u_longlong_t)rwa->bdi->bdi_count);
+		bdi_destroy(rwa->bdi);
+		rwa->bdi = NULL;
+	}
+
 	cv_destroy(&rwa->cv);
 	mutex_destroy(&rwa->mutex);
 	bqueue_destroy(&rwa->q);
@@ -3542,6 +3768,12 @@ out:
 	 */
 	if (drc->drc_next_rrd != NULL)
 		kmem_free(drc->drc_next_rrd, sizeof (*drc->drc_next_rrd));
+
+	/* Clean up bclone index if we failed before the writer thread */
+	if (rwa->bdi != NULL) {
+		bdi_destroy(rwa->bdi);
+		rwa->bdi = NULL;
+	}
 
 	/*
 	 * The objset will be invalidated by dmu_recv_end() when we do

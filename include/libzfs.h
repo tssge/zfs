@@ -926,6 +926,9 @@ typedef struct recvflags {
 
 	/* use this recv to check (and heal if needed) an existing snapshot */
 	boolean_t heal;
+
+	/* use block cloning to deduplicate against existing destination data */
+	boolean_t bclone_dedup;
 } recvflags_t;
 
 _LIBZFS_H int zfs_receive(libzfs_handle_t *, const char *, nvlist_t *,

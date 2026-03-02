@@ -110,6 +110,7 @@ struct zfs_bookmark_phys;
 #define	DS_FIELD_RESUME_EMBEDOK "com.delphix:resume_embedok"
 #define	DS_FIELD_RESUME_COMPRESSOK "com.delphix:resume_compressok"
 #define	DS_FIELD_RESUME_RAWOK "com.datto:resume_rawok"
+#define	DS_FIELD_RESUME_BCLONE_DEDUP "org.openzfs:resume_bclone_dedup"
 
 /*
  * This field is set to the object number of the remap deadlist if one exists.

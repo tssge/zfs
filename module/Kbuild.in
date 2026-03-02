@@ -316,6 +316,7 @@ ZFS_OBJS := \
 	arc.o \
 	blake3_zfs.o \
 	blkptr.o \
+	bclone_dedup.o \
 	bplist.o \
 	bpobj.o \
 	bptree.o \

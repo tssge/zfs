@@ -36,6 +36,7 @@
 #include <sys/dsl_dataset.h>
 #include <sys/spa.h>
 #include <sys/objlist.h>
+#include <sys/bclone_dedup.h>
 
 extern const char *const recv_clone_name;
 
@@ -51,6 +52,8 @@ typedef struct dmu_recv_cookie {
 	boolean_t drc_force;
 	boolean_t drc_heal;
 	boolean_t drc_resumable;
+	boolean_t drc_bclone_dedup;		/* -B flag active */
+	bclone_dedup_index_t *drc_bdi;		/* pre-built index (or NULL) */
 	boolean_t drc_should_save;
 	boolean_t drc_raw;
 	boolean_t drc_clone;
@@ -80,8 +83,8 @@ typedef struct dmu_recv_cookie {
 } dmu_recv_cookie_t;
 
 int dmu_recv_begin(const char *, const char *, dmu_replay_record_t *,
-    boolean_t, boolean_t, boolean_t, nvlist_t *, nvlist_t *, const char *,
-    dmu_recv_cookie_t *, zfs_file_t *, offset_t *);
+    boolean_t, boolean_t, boolean_t, boolean_t, nvlist_t *, nvlist_t *,
+    const char *, dmu_recv_cookie_t *, zfs_file_t *, offset_t *);
 int dmu_recv_stream(dmu_recv_cookie_t *, offset_t *);
 int dmu_recv_end(dmu_recv_cookie_t *, void *);
 boolean_t dmu_objset_is_receiving(objset_t *);

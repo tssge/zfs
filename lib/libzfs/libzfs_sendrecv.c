@@ -5042,10 +5042,11 @@ zfs_receive_one(libzfs_handle_t *hdl, int infd, const char *tosnap,
 		goto out;
 	}
 
-	if (flags->heal) {
+	if (flags->heal || flags->bclone_dedup) {
 		err = ioctl_err = lzc_receive_with_heal(destsnap, rcvprops,
 		    oxprops, wkeydata, wkeylen, origin, flags->force,
-		    flags->heal, flags->resumable, raw, infd, drr_noswap, -1,
+		    flags->heal, flags->resumable, raw,
+		    flags->bclone_dedup, infd, drr_noswap, -1,
 		    &read_bytes, &errflags, NULL, &prop_errors);
 	} else {
 		err = ioctl_err = lzc_receive_with_cmdprops(destsnap, rcvprops,

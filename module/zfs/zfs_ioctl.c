@@ -5301,7 +5301,8 @@ static boolean_t zfs_ioc_recv_inject_err;
 static int
 zfs_ioc_recv_impl(char *tofs, char *tosnap, const char *origin,
     nvlist_t *recvprops, nvlist_t *localprops, nvlist_t *hidden_args,
-    boolean_t force, boolean_t heal, boolean_t resumable, int input_fd,
+    boolean_t force, boolean_t heal, boolean_t resumable,
+    boolean_t bclone_dedup, int input_fd,
     dmu_replay_record_t *begin_record, uint64_t *read_bytes,
     uint64_t *errflags, nvlist_t **errors)
 {
@@ -5327,11 +5328,44 @@ zfs_ioc_recv_impl(char *tofs, char *tosnap, const char *origin,
 		return (SET_ERROR(EBADF));
 
 	noff = off = zfs_file_off(input_fp);
+
+	/*
+	 * Block clone dedup (-B): build the checksum index from the original
+	 * destination dataset BEFORE dmu_recv_begin creates the temp clone.
+	 * We can safely hold/traverse/release the dataset here because no
+	 * recv machinery is running yet.
+	 */
+	bclone_dedup_index_t *bdi = NULL;
+	if (bclone_dedup) {
+		objset_t *bdi_os;
+		error = dmu_objset_hold(tofs, FTAG, &bdi_os);
+		if (error == 0) {
+			bdi = bdi_create(zfs_recv_bclone_dedup_max_bytes);
+			error = bdi_populate_from_dataset(bdi,
+			    dmu_objset_ds(bdi_os));
+			dmu_objset_rele(bdi_os, FTAG);
+			if (error != 0) {
+				bdi_destroy(bdi);
+				bdi = NULL;
+				goto out;
+			}
+		} else if (error == ENOENT) {
+			/* New dataset — nothing to index, proceed normally */
+			error = 0;
+		} else {
+			goto out;
+		}
+	}
+
 	error = dmu_recv_begin(tofs, tosnap, begin_record, force, heal,
-	    resumable, localprops, hidden_args, origin, &drc, input_fp,
-	    &off);
-	if (error != 0)
+	    resumable, bclone_dedup, localprops, hidden_args, origin, &drc,
+	    input_fp, &off);
+	if (error != 0) {
+		if (bdi != NULL)
+			bdi_destroy(bdi);
 		goto out;
+	}
+	drc.drc_bdi = bdi;
 	tofs_was_redacted = dsl_get_redacted(drc.drc_ds);
 
 	/*
@@ -5682,8 +5716,8 @@ zfs_ioc_recv(zfs_cmd_t *zc)
 	begin_record.drr_u.drr_begin = zc->zc_begin_record;
 
 	error = zfs_ioc_recv_impl(tofs, tosnap, origin, recvdprops, localprops,
-	    NULL, zc->zc_guid, B_FALSE, B_FALSE, zc->zc_cookie, &begin_record,
-	    &zc->zc_cookie, &zc->zc_obj, &errors);
+	    NULL, zc->zc_guid, B_FALSE, B_FALSE, B_FALSE, zc->zc_cookie,
+	    &begin_record, &zc->zc_cookie, &zc->zc_obj, &errors);
 
 	/*
 	 * Now that all props, initial and delayed, are set, report the prop
@@ -5738,6 +5772,7 @@ static const zfs_ioc_key_t zfs_keys_recv_new[] = {
 	{"input_fd",		DATA_TYPE_INT32,	0},
 	{"force",		DATA_TYPE_BOOLEAN,	ZK_OPTIONAL},
 	{"heal",		DATA_TYPE_BOOLEAN,	ZK_OPTIONAL},
+	{"bclone_dedup",	DATA_TYPE_BOOLEAN,	ZK_OPTIONAL},
 	{"resumable",		DATA_TYPE_BOOLEAN,	ZK_OPTIONAL},
 	{"cleanup_fd",		DATA_TYPE_INT32,	ZK_OPTIONAL},
 	{"action_handle",	DATA_TYPE_UINT64,	ZK_OPTIONAL},
@@ -5792,6 +5827,8 @@ zfs_ioc_recv_new(const char *fsname, nvlist_t *innvl, nvlist_t *outnvl)
 	heal = nvlist_exists(innvl, "heal");
 	resumable = nvlist_exists(innvl, "resumable");
 
+	boolean_t bclone_dedup = nvlist_exists(innvl, "bclone_dedup");
+
 	/* we still use "props" here for backwards compatibility */
 	error = nvlist_lookup_nvlist(innvl, "props", &recvprops);
 	if (error && error != ENOENT)
@@ -5806,8 +5843,8 @@ zfs_ioc_recv_new(const char *fsname, nvlist_t *innvl, nvlist_t *outnvl)
 		goto out;
 
 	error = zfs_ioc_recv_impl(tofs, tosnap, origin, recvprops, localprops,
-	    hidden_args, force, heal, resumable, input_fd, begin_record,
-	    &read_bytes, &errflags, &errors);
+	    hidden_args, force, heal, resumable, bclone_dedup, input_fd,
+	    begin_record, &read_bytes, &errflags, &errors);
 
 	fnvlist_add_uint64(outnvl, "read_bytes", read_bytes);
 	fnvlist_add_uint64(outnvl, "error_flags", errflags);
