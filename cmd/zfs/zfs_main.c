@@ -328,10 +328,10 @@ get_usage(zfs_help_t idx)
 	case HELP_PROMOTE:
 		return (gettext("\tpromote <clone-filesystem>\n"));
 	case HELP_RECEIVE:
-		return (gettext("\treceive [-vMnsFhu] "
+		return (gettext("\treceive [-BvMnsFhu] "
 		    "[-o <property>=<value>] ... [-x <property>] ...\n"
 		    "\t    <filesystem|volume|snapshot>\n"
-		    "\treceive [-vMnsFhu] [-o <property>=<value>] ... "
+		    "\treceive [-BvMnsFhu] [-o <property>=<value>] ... "
 		    "[-x <property>] ... \n"
 		    "\t    [-d | -e] <filesystem>\n"
 		    "\treceive -A <filesystem|volume>\n"));
@@ -5145,8 +5145,23 @@ zfs_do_receive(int argc, char **argv)
 	if (nvlist_alloc(&props, NV_UNIQUE_NAME, 0) != 0)
 		nomem();
 
+	struct option long_options[] = {
+		{"bclone-dedup",  no_argument, NULL, 'B'},
+		{"force",         no_argument, NULL, 'F'},
+		{"verbose",       no_argument, NULL, 'v'},
+		{"force-unmount", no_argument, NULL, 'M'},
+		{"dryrun",        no_argument, NULL, 'n'},
+		{"resumable",     no_argument, NULL, 's'},
+		{"skip-holds",    no_argument, NULL, 'h'},
+		{"nomount",       no_argument, NULL, 'u'},
+		{"heal",          no_argument, NULL, 'c'},
+		{"abort",         no_argument, NULL, 'A'},
+		{0, 0, 0, 0}
+	};
+
 	/* check options */
-	while ((c = getopt(argc, argv, ":o:x:dehMnuvFsAcB")) != -1) {
+	while ((c = getopt_long(argc, argv, ":o:x:dehMnuvFsAcB",
+	    long_options, NULL)) != -1) {
 		switch (c) {
 		case 'o':
 			if (!parseprop(props, optarg)) {
