@@ -487,6 +487,7 @@ nobase_dist_datadir_zfs_tests_tests_SCRIPTS += \
 	functional/bclone_dedup/bclone_dedup_raw_send.ksh \
 	functional/bclone_dedup/bclone_dedup_mem_cap.ksh \
 	functional/bclone_dedup/bclone_dedup_resume.ksh \
+	functional/bclone_dedup/bclone_dedup_resume_source.ksh \
 	functional/bclone_dedup/bclone_dedup_mixed_cksum.ksh \
 	functional/bclone_dedup/bclone_dedup_fallback.ksh \
 	functional/bclone_dedup/bclone_dedup_cross_dataset.ksh \

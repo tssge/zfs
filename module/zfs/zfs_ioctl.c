@@ -5435,8 +5435,8 @@ zfs_ioc_recv_impl(char *tofs, char *tosnap, const char *origin,
 	}
 
 	error = dmu_recv_begin(tofs, tosnap, begin_record, force, heal,
-	    resumable, bclone_dedup, localprops, hidden_args, origin, &drc,
-	    input_fp, &off);
+	    resumable, bclone_dedup, bclone_source, localprops, hidden_args,
+	    origin, &drc, input_fp, &off);
 	if (error != 0) {
 		if (bdi != NULL)
 			bdi_destroy(bdi);

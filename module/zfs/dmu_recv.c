@@ -1014,6 +1014,12 @@ dmu_recv_begin_sync(void *arg, dmu_tx_t *tx)
 			    DS_FIELD_RESUME_BCLONE_DEDUP,
 			    8, 1, &one, tx));
 		}
+		if (drc->drc_bclone_source != NULL) {
+			VERIFY0(zap_add(mos, dsobj,
+			    DS_FIELD_RESUME_BCLONE_SOURCE,
+			    1, strlen(drc->drc_bclone_source) + 1,
+			    drc->drc_bclone_source, tx));
+		}
 
 		uint64_t *redact_snaps;
 		uint_t numredactsnaps;
@@ -1324,7 +1330,8 @@ dmu_recv_resume_begin_sync(void *arg, dmu_tx_t *tx)
 int
 dmu_recv_begin(const char *tofs, const char *tosnap,
     dmu_replay_record_t *drr_begin, boolean_t force, boolean_t heal,
-    boolean_t resumable, boolean_t bclone_dedup, nvlist_t *localprops,
+    boolean_t resumable, boolean_t bclone_dedup,
+    const char *bclone_source, nvlist_t *localprops,
     nvlist_t *hidden_args, const char *origin, dmu_recv_cookie_t *drc,
     zfs_file_t *fp, offset_t *voffp)
 {
@@ -1343,6 +1350,7 @@ dmu_recv_begin(const char *tofs, const char *tosnap,
 	drc->drc_heal = heal;
 	drc->drc_resumable = resumable;
 	drc->drc_bclone_dedup = bclone_dedup;
+	drc->drc_bclone_source = bclone_source;
 	drc->drc_cred = cr;
 	drc->drc_clone = (origin != NULL);
 
@@ -3536,11 +3544,29 @@ dmu_recv_stream(dmu_recv_cookie_t *drc, offset_t *voffp)
 		    sizeof (bytes), 1, &bytes);
 		drc->drc_bytes_read += bytes;
 
-		/* Recover bclone_dedup flag from resume state */
-		if (zap_contains(drc->drc_ds->ds_dir->dd_pool->dp_meta_objset,
-		    drc->drc_ds->ds_object,
+		/* Recover bclone_dedup state from resume ZAP */
+		objset_t *dp_mos =
+		    drc->drc_ds->ds_dir->dd_pool->dp_meta_objset;
+		if (zap_contains(dp_mos, drc->drc_ds->ds_object,
 		    DS_FIELD_RESUME_BCLONE_DEDUP) == 0) {
 			drc->drc_bclone_dedup = B_TRUE;
+		}
+	}
+
+	/*
+	 * Recover bclone_source from resume ZAP — must be declared at
+	 * function scope so the buffer survives through index rebuild.
+	 */
+	char bclone_source_buf[ZFS_MAX_DATASET_NAME_LEN];
+	if (dsl_dataset_has_resume_receive_state(drc->drc_ds) &&
+	    drc->drc_bclone_dedup && drc->drc_bclone_source == NULL) {
+		if (zap_lookup(
+		    drc->drc_ds->ds_dir->dd_pool->dp_meta_objset,
+		    drc->drc_ds->ds_object,
+		    DS_FIELD_RESUME_BCLONE_SOURCE,
+		    1, sizeof (bclone_source_buf),
+		    bclone_source_buf) == 0) {
+			drc->drc_bclone_source = bclone_source_buf;
 		}
 	}
 
@@ -3637,10 +3663,57 @@ dmu_recv_stream(dmu_recv_cookie_t *drc, offset_t *voffp)
 			/*
 			 * No pre-built index (e.g., resume case where the
 			 * flag was recovered from ZAP).  Build from the
-			 * original destination dataset via dmu_objset_hold,
-			 * which safely acquires the pool config lock.
+			 * cross-dataset source (if any) and then from the
+			 * destination dataset via dmu_objset_hold, which
+			 * safely acquires the pool config lock.
 			 */
 			rwa->bdi = bdi_create(zfs_recv_bclone_dedup_max_bytes);
+
+			/* Cross-dataset source from resume state */
+			if (drc->drc_bclone_source != NULL &&
+			    strcmp(drc->drc_bclone_source,
+			    drc->drc_tofs) != 0) {
+				objset_t *src_os;
+				int src_err = dmu_objset_hold(
+				    drc->drc_bclone_source, FTAG,
+				    &src_os);
+				if (src_err == 0) {
+					const char *src_pool = spa_name(
+					    dmu_objset_spa(src_os));
+					char dst_pool[
+					    ZFS_MAX_DATASET_NAME_LEN];
+					(void) strlcpy(dst_pool,
+					    drc->drc_tofs,
+					    sizeof (dst_pool));
+					char *sl = strchr(dst_pool, '/');
+					if (sl != NULL)
+						*sl = '\0';
+					boolean_t src_ok = B_FALSE;
+					if (strcmp(src_pool, dst_pool) != 0) {
+						/* different pool — skip */
+					} else if (src_os->os_encrypted) {
+						src_ok = B_TRUE;
+					} else {
+						enum zio_checksum ck =
+						    src_os->os_checksum;
+						src_ok =
+						    (ck == ZIO_CHECKSUM_SHA256 ||
+						    ck == ZIO_CHECKSUM_SKEIN ||
+						    ck == ZIO_CHECKSUM_EDONR ||
+						    ck == ZIO_CHECKSUM_BLAKE3);
+					}
+					if (src_ok) {
+						(void)
+						    bdi_populate_from_dataset(
+						    rwa->bdi,
+						    dmu_objset_ds(src_os));
+					}
+					dmu_objset_rele(src_os, FTAG);
+				}
+				/* ENOENT: source gone — skip gracefully */
+			}
+
+			/* Destination dataset */
 			objset_t *bdi_os;
 			err = dmu_objset_hold(drc->drc_tofs, FTAG, &bdi_os);
 			if (err == 0) {

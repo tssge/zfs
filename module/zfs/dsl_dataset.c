@@ -2438,6 +2438,10 @@ get_receive_resume_token_impl(dsl_dataset_t *ds)
 	    DS_FIELD_RESUME_BCLONE_DEDUP) == 0) {
 		fnvlist_add_boolean(token_nv, "bclone_dedup");
 	}
+	if (zap_lookup(dp->dp_meta_objset, ds->ds_object,
+	    DS_FIELD_RESUME_BCLONE_SOURCE, 1, sizeof (buf), buf) == 0) {
+		fnvlist_add_string(token_nv, "bclone_source", buf);
+	}
 	if (dsl_dataset_feature_is_active(ds,
 	    SPA_FEATURE_REDACTED_DATASETS)) {
 		uint64_t num_redact_snaps = 0;
