@@ -5387,6 +5387,20 @@ zfs_receive_one(libzfs_handle_t *hdl, int infd, const char *tosnap,
 		(void) fprintf(stderr, "\n");
 	}
 
+	/* Warn when --bclone-source was skipped (non-verbose mode) */
+	if (recv_info != NULL && !flags->verbose) {
+		const char *src_status = NULL;
+		(void) nvlist_lookup_string(recv_info,
+		    "bclone_source_status", &src_status);
+		if (src_status != NULL &&
+		    strcmp(src_status, "indexed") != 0) {
+			(void) fprintf(stderr, dgettext(TEXT_DOMAIN,
+			    "Warning: --bclone-source skipped: %s"),
+			    src_status);
+			(void) fprintf(stderr, "\n");
+		}
+	}
+
 	if (err || ioctl_err) {
 		err = -1;
 		goto out;
@@ -5432,6 +5446,13 @@ zfs_receive_one(libzfs_handle_t *hdl, int infd, const char *tosnap,
 			    (u_longlong_t)hits, cbuf,
 			    (u_longlong_t)misses,
 			    (u_longlong_t)entries);
+			const char *src_status = NULL;
+			(void) nvlist_lookup_string(recv_info,
+			    "bclone_source_status", &src_status);
+			if (src_status != NULL) {
+				(void) printf("bclone_source: %s\n",
+				    src_status);
+			}
 		}
 	}
 

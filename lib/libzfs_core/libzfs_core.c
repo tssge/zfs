@@ -1194,6 +1194,15 @@ recv_impl(const char *snapname, nvlist_t *recvdprops, nvlist_t *localprops,
 				    "bclone_index_entries", &val) == 0)
 					fnvlist_add_uint64(info,
 					    "bclone_index_entries", val);
+				const char *src_status = NULL;
+				if (nvlist_lookup_string(outnvl,
+				    "bclone_source_status",
+				    &src_status) == 0) {
+					fnvlist_add_string(info,
+					    "bclone_source_status",
+					    src_status);
+					has = B_TRUE;
+				}
 				if (has)
 					*recv_info = info;
 				else

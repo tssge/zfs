@@ -5306,7 +5306,8 @@ zfs_ioc_recv_impl(char *tofs, char *tosnap, const char *origin,
     dmu_replay_record_t *begin_record, uint64_t *read_bytes,
     uint64_t *errflags, nvlist_t **errors,
     uint64_t *out_bclone_hits, uint64_t *out_bclone_misses,
-    uint64_t *out_bclone_bytes_cloned, uint64_t *out_bclone_index_entries)
+    uint64_t *out_bclone_bytes_cloned, uint64_t *out_bclone_index_entries,
+    const char **out_bclone_source_status)
 {
 	dmu_recv_cookie_t drc;
 	int error = 0;
@@ -5346,6 +5347,7 @@ zfs_ioc_recv_impl(char *tofs, char *tosnap, const char *origin,
 	 * naturally when both datasets share blocks.
 	 */
 	bclone_dedup_index_t *bdi = NULL;
+	const char *bclone_source_status = NULL;
 	if (bclone_dedup) {
 		bdi = bdi_create(zfs_recv_bclone_dedup_max_bytes);
 
@@ -5377,6 +5379,8 @@ zfs_ioc_recv_impl(char *tofs, char *tosnap, const char *origin,
 				    (strcmp(src_pool, dst_pool) == 0);
 
 				if (!same_pool) {
+					bclone_source_status =
+					    "different_pool";
 					dmu_objset_rele(src_os, FTAG);
 				} else if (!src_os->os_encrypted) {
 					enum zio_checksum cksum =
@@ -5385,21 +5389,27 @@ zfs_ioc_recv_impl(char *tofs, char *tosnap, const char *origin,
 					    cksum != ZIO_CHECKSUM_SKEIN &&
 					    cksum != ZIO_CHECKSUM_EDONR &&
 					    cksum != ZIO_CHECKSUM_BLAKE3) {
+						bclone_source_status =
+						    "non_crypto_checksum";
 						dmu_objset_rele(src_os, FTAG);
 					} else {
 						(void) bdi_populate_from_dataset(
 						    bdi,
 						    dmu_objset_ds(src_os));
+						bclone_source_status =
+						    "indexed";
 						dmu_objset_rele(src_os, FTAG);
 					}
 				} else {
 					/* Encrypted — skip checksum check */
 					(void) bdi_populate_from_dataset(bdi,
 					    dmu_objset_ds(src_os));
+					bclone_source_status = "indexed";
 					dmu_objset_rele(src_os, FTAG);
 				}
+			} else {
+				bclone_source_status = "not_found";
 			}
-			/* ENOENT: source doesn't exist — silently skip */
 		}
 
 		/* Destination dataset: index from existing blocks */
@@ -5630,6 +5640,8 @@ zfs_ioc_recv_impl(char *tofs, char *tosnap, const char *origin,
 		*out_bclone_bytes_cloned = drc.drc_bclone_bytes_cloned;
 		*out_bclone_index_entries = drc.drc_bclone_index_entries;
 	}
+	if (out_bclone_source_status != NULL)
+		*out_bclone_source_status = bclone_source_status;
 
 #ifdef	ZFS_DEBUG
 	if (zfs_ioc_recv_inject_err) {
@@ -5802,7 +5814,7 @@ zfs_ioc_recv(zfs_cmd_t *zc)
 	error = zfs_ioc_recv_impl(tofs, tosnap, origin, recvdprops, localprops,
 	    NULL, zc->zc_guid, B_FALSE, B_FALSE, B_FALSE, NULL,
 	    zc->zc_cookie, &begin_record, &zc->zc_cookie, &zc->zc_obj,
-	    &errors, NULL, NULL, NULL, NULL);
+	    &errors, NULL, NULL, NULL, NULL, NULL);
 
 	/*
 	 * Now that all props, initial and delayed, are set, report the prop
@@ -5937,6 +5949,7 @@ zfs_ioc_recv_new(const char *fsname, nvlist_t *innvl, nvlist_t *outnvl)
 
 	uint64_t bclone_hits = 0, bclone_misses = 0;
 	uint64_t bclone_bytes_cloned = 0, bclone_index_entries = 0;
+	const char *bclone_source_status = NULL;
 
 	error = zfs_ioc_recv_impl(tofs, tosnap, origin, recvprops, localprops,
 	    hidden_args, force, heal, resumable, bclone_dedup, bclone_source,
@@ -5944,7 +5957,8 @@ zfs_ioc_recv_new(const char *fsname, nvlist_t *innvl, nvlist_t *outnvl)
 	    bclone_dedup ? &bclone_hits : NULL,
 	    bclone_dedup ? &bclone_misses : NULL,
 	    bclone_dedup ? &bclone_bytes_cloned : NULL,
-	    bclone_dedup ? &bclone_index_entries : NULL);
+	    bclone_dedup ? &bclone_index_entries : NULL,
+	    bclone_source != NULL ? &bclone_source_status : NULL);
 
 	fnvlist_add_uint64(outnvl, "read_bytes", read_bytes);
 	fnvlist_add_uint64(outnvl, "error_flags", errflags);
@@ -5956,6 +5970,10 @@ zfs_ioc_recv_new(const char *fsname, nvlist_t *innvl, nvlist_t *outnvl)
 		    bclone_bytes_cloned);
 		fnvlist_add_uint64(outnvl, "bclone_index_entries",
 		    bclone_index_entries);
+	}
+	if (bclone_source_status != NULL) {
+		fnvlist_add_string(outnvl, "bclone_source_status",
+		    bclone_source_status);
 	}
 
 out:
