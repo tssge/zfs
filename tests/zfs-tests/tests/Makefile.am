@@ -494,6 +494,10 @@ nobase_dist_datadir_zfs_tests_tests_SCRIPTS += \
 	functional/bclone_dedup/bclone_dedup_cross_dataset.ksh \
 	functional/bclone_dedup/bclone_dedup_recursive.ksh \
 	functional/bclone_dedup/bclone_dedup_large_blocks.ksh \
+	functional/bclone_dedup/bclone_dedup_recv_d.ksh \
+	functional/bclone_dedup/bclone_dedup_recv_e.ksh \
+	functional/bclone_dedup/bclone_dedup_embedded.ksh \
+	functional/bclone_dedup/bclone_dedup_cross_encrypted.ksh \
 	functional/block_cloning/cleanup.ksh \
 	functional/block_cloning/setup.ksh \
 	functional/block_cloning/block_cloning_clone_mmap_cached.ksh \

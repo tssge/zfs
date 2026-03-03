@@ -90,7 +90,11 @@ tests = ['bclone_dedup_full_rerecv',
     'bclone_dedup_source_warnings',
     'bclone_dedup_cross_dataset',
     'bclone_dedup_recursive',
-    'bclone_dedup_large_blocks']
+    'bclone_dedup_large_blocks',
+    'bclone_dedup_recv_d',
+    'bclone_dedup_recv_e',
+    'bclone_dedup_embedded',
+    'bclone_dedup_cross_encrypted']
 tags = ['functional', 'bclone_dedup']
 
 [tests/functional/block_cloning]
