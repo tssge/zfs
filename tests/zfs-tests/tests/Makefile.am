@@ -484,6 +484,7 @@ nobase_dist_datadir_zfs_tests_tests_SCRIPTS += \
 	functional/bclone_dedup/bclone_dedup_fletcher_noop.ksh \
 	functional/bclone_dedup/bclone_dedup_noncrypto_rejected.ksh \
 	functional/bclone_dedup/bclone_dedup_verbose.ksh \
+	functional/bclone_dedup/bclone_dedup_raw_send.ksh \
 	functional/block_cloning/cleanup.ksh \
 	functional/block_cloning/setup.ksh \
 	functional/block_cloning/block_cloning_clone_mmap_cached.ksh \
