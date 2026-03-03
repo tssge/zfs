@@ -81,7 +81,9 @@ tests = ['bclone_dedup_full_rerecv',
     'bclone_dedup_fletcher_noop',
     'bclone_dedup_noncrypto_rejected',
     'bclone_dedup_verbose',
-    'bclone_dedup_raw_send']
+    'bclone_dedup_raw_send',
+    'bclone_dedup_mem_cap',
+    'bclone_dedup_resume']
 tags = ['functional', 'bclone_dedup']
 
 [tests/functional/block_cloning]
