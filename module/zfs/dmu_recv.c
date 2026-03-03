@@ -692,6 +692,30 @@ dmu_recv_begin_check(void *arg, dmu_tx_t *tx)
 			return (SET_ERROR(EINVAL));
 		}
 
+		/*
+		 * Block clone dedup (-B) requires a cryptographic checksum
+		 * on the destination.  Non-cryptographic checksums (fletcher4,
+		 * fletcher2) are NOT collision-resistant — cloning based on a
+		 * false match would cause silent data corruption.  Reject
+		 * upfront rather than wasting time building a useless index.
+		 */
+		if (drba->drba_cookie->drc_bclone_dedup) {
+			objset_t *os;
+			int ckerr = dmu_objset_from_ds(ds, &os);
+			if (ckerr == 0) {
+				zio_prop_t zp;
+				dmu_write_policy(os, NULL, 0, 0, &zp);
+				if (zp.zp_checksum != ZIO_CHECKSUM_SHA256 &&
+				    zp.zp_checksum != ZIO_CHECKSUM_SKEIN &&
+				    zp.zp_checksum != ZIO_CHECKSUM_EDONR &&
+				    zp.zp_checksum != ZIO_CHECKSUM_BLAKE3) {
+					dsl_dataset_rele_flags(ds, dsflags,
+					    FTAG);
+					return (SET_ERROR(ENOTSUP));
+				}
+			}
+		}
+
 		error = recv_begin_check_existing_impl(drba, ds, fromguid,
 		    featureflags);
 		dsl_dataset_rele_flags(ds, dsflags, FTAG);

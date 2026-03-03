@@ -482,6 +482,7 @@ nobase_dist_datadir_zfs_tests_tests_SCRIPTS += \
 	functional/bclone_dedup/bclone_dedup_no_overlap.ksh \
 	functional/bclone_dedup/bclone_dedup_uncompressed_rejected.ksh \
 	functional/bclone_dedup/bclone_dedup_fletcher_noop.ksh \
+	functional/bclone_dedup/bclone_dedup_noncrypto_rejected.ksh \
 	functional/block_cloning/cleanup.ksh \
 	functional/block_cloning/setup.ksh \
 	functional/block_cloning/block_cloning_clone_mmap_cached.ksh \
