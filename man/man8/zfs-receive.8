@@ -280,7 +280,22 @@ When combined with
 a summary line is printed after completion showing the number of blocks cloned,
 misses, and index size.
 .Pp
-Does not deduplicate across datasets.
+When receiving a replication stream
+.Pq Fl R ,
+child datasets automatically dedup against the top-level parent dataset that was
+received first.
+Use
+.Fl -bclone-source
+to specify an explicit cross-dataset source.
+.It Fl -bclone-source Ar dataset
+When used with
+.Fl B ,
+also build the dedup index from
+.Ar dataset
+in addition to the destination's existing blocks.
+.Ar dataset
+must be in the same pool as the destination and use a cryptographic checksum.
+This allows deduplication against blocks in a different dataset.
 .It Fl F
 Force a rollback of the file system to the most recent snapshot before
 performing the receive operation.

@@ -3986,6 +3986,41 @@ zfs_receive_package(libzfs_handle_t *hdl, int fd, const char *destname,
 		sendsnap = (cp + 1);
 	}
 
+	/*
+	 * For -R -B: compute the top-level destination filesystem name
+	 * (tofs) so we can auto-set it as bclone_source for child datasets.
+	 * tofs was already computed above if (fromsnap && recursive); for
+	 * other cases, compute it now using the same logic.
+	 */
+	boolean_t bclone_auto_source = B_FALSE;
+	if (flags->bclone_dedup && flags->bclone_source == NULL) {
+		if (!(fromsnap != NULL && recursive)) {
+			(void) strlcpy(tofs, destname, sizeof (tofs));
+			if (flags->isprefix) {
+				struct drr_begin *drrb =
+				    &drr->drr_u.drr_begin;
+				int i;
+
+				if (flags->istail) {
+					cp = strrchr(drrb->drr_toname, '/');
+					if (cp == NULL) {
+						(void) strlcat(tofs, "/",
+						    sizeof (tofs));
+						i = 0;
+					} else {
+						i = (cp - drrb->drr_toname);
+					}
+				} else {
+					i = strcspn(drrb->drr_toname, "/@");
+				}
+				(void) strlcat(tofs, &drrb->drr_toname[i],
+				    sizeof (tofs));
+				*strchr(tofs, '@') = '\0';
+			}
+		}
+		bclone_auto_source = B_TRUE;
+	}
+
 	/* Finally, receive each contained stream */
 	do {
 		/*
@@ -4000,6 +4035,15 @@ zfs_receive_package(libzfs_handle_t *hdl, int fd, const char *destname,
 		if (error == ENODATA) {
 			error = 0;
 			break;
+		}
+		/*
+		 * After the first dataset in a replication stream is
+		 * received, set bclone_source to the top-level destination
+		 * so child datasets can dedup against the parent's blocks.
+		 */
+		if (error == 0 && bclone_auto_source) {
+			flags->bclone_source = tofs;
+			bclone_auto_source = B_FALSE;
 		}
 		anyerr |= error;
 	} while (error == 0);
@@ -5047,7 +5091,8 @@ zfs_receive_one(libzfs_handle_t *hdl, int infd, const char *tosnap,
 		err = ioctl_err = lzc_receive_with_info(destsnap, rcvprops,
 		    oxprops, wkeydata, wkeylen, origin, flags->force,
 		    flags->heal, flags->resumable, raw,
-		    flags->bclone_dedup, infd, drr_noswap, -1,
+		    flags->bclone_dedup, flags->bclone_source,
+		    infd, drr_noswap, -1,
 		    &read_bytes, &errflags, NULL, &prop_errors, &recv_info);
 	} else {
 		err = ioctl_err = lzc_receive_with_cmdprops(destsnap, rcvprops,

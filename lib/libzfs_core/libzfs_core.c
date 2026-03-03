@@ -1047,7 +1047,7 @@ static int
 recv_impl(const char *snapname, nvlist_t *recvdprops, nvlist_t *localprops,
     uint8_t *wkeydata, uint_t wkeylen, const char *origin, boolean_t force,
     boolean_t heal, boolean_t resumable, boolean_t raw,
-    boolean_t bclone_dedup, int input_fd,
+    boolean_t bclone_dedup, const char *bclone_source, int input_fd,
     const dmu_replay_record_t *begin_record, uint64_t *read_bytes,
     uint64_t *errflags, nvlist_t **errors, nvlist_t **recv_info)
 {
@@ -1148,6 +1148,10 @@ recv_impl(const char *snapname, nvlist_t *recvdprops, nvlist_t *localprops,
 
 		if (bclone_dedup)
 			fnvlist_add_boolean(innvl, "bclone_dedup");
+
+		if (bclone_source != NULL)
+			fnvlist_add_string(innvl, "bclone_source",
+			    bclone_source);
 
 		error = lzc_ioctl(ZFS_IOC_RECV_NEW, fsname, innvl, &outnvl);
 
@@ -1284,7 +1288,7 @@ lzc_receive(const char *snapname, nvlist_t *props, const char *origin,
     boolean_t force, boolean_t raw, int fd)
 {
 	return (recv_impl(snapname, props, NULL, NULL, 0, origin, force,
-	    B_FALSE, B_FALSE, raw, B_FALSE, fd, NULL, NULL, NULL, NULL,
+	    B_FALSE, B_FALSE, raw, B_FALSE, NULL, fd, NULL, NULL, NULL, NULL,
 	    NULL));
 }
 
@@ -1299,7 +1303,7 @@ lzc_receive_resumable(const char *snapname, nvlist_t *props, const char *origin,
     boolean_t force, boolean_t raw, int fd)
 {
 	return (recv_impl(snapname, props, NULL, NULL, 0, origin, force,
-	    B_FALSE, B_TRUE, raw, B_FALSE, fd, NULL, NULL, NULL, NULL,
+	    B_FALSE, B_TRUE, raw, B_FALSE, NULL, fd, NULL, NULL, NULL, NULL,
 	    NULL));
 }
 
@@ -1323,7 +1327,7 @@ lzc_receive_with_header(const char *snapname, nvlist_t *props,
 		return (EINVAL);
 
 	return (recv_impl(snapname, props, NULL, NULL, 0, origin, force,
-	    B_FALSE, resumable, raw, B_FALSE, fd, begin_record,
+	    B_FALSE, resumable, raw, B_FALSE, NULL, fd, begin_record,
 	    NULL, NULL, NULL, NULL));
 }
 
@@ -1354,7 +1358,7 @@ lzc_receive_one(const char *snapname, nvlist_t *props,
 {
 	(void) action_handle, (void) cleanup_fd;
 	return (recv_impl(snapname, props, NULL, NULL, 0, origin, force,
-	    B_FALSE, resumable, raw, B_FALSE, input_fd, begin_record,
+	    B_FALSE, resumable, raw, B_FALSE, NULL, input_fd, begin_record,
 	    read_bytes, errflags, errors, NULL));
 }
 
@@ -1376,8 +1380,8 @@ lzc_receive_with_cmdprops(const char *snapname, nvlist_t *props,
 {
 	(void) action_handle, (void) cleanup_fd;
 	return (recv_impl(snapname, props, cmdprops, wkeydata, wkeylen, origin,
-	    force, B_FALSE, resumable, raw, B_FALSE, input_fd, begin_record,
-	    read_bytes, errflags, errors, NULL));
+	    force, B_FALSE, resumable, raw, B_FALSE, NULL, input_fd,
+	    begin_record, read_bytes, errflags, errors, NULL));
 }
 
 /*
@@ -1397,8 +1401,8 @@ int lzc_receive_with_heal(const char *snapname, nvlist_t *props,
 {
 	(void) action_handle, (void) cleanup_fd;
 	return (recv_impl(snapname, props, cmdprops, wkeydata, wkeylen, origin,
-	    force, heal, resumable, raw, bclone_dedup, input_fd, begin_record,
-	    read_bytes, errflags, errors, NULL));
+	    force, heal, resumable, raw, bclone_dedup, NULL, input_fd,
+	    begin_record, read_bytes, errflags, errors, NULL));
 }
 
 /*
@@ -1410,15 +1414,15 @@ int lzc_receive_with_heal(const char *snapname, nvlist_t *props,
 int lzc_receive_with_info(const char *snapname, nvlist_t *props,
     nvlist_t *cmdprops, uint8_t *wkeydata, uint_t wkeylen, const char *origin,
     boolean_t force, boolean_t heal, boolean_t resumable, boolean_t raw,
-    boolean_t bclone_dedup, int input_fd,
+    boolean_t bclone_dedup, const char *bclone_source, int input_fd,
     const dmu_replay_record_t *begin_record, int cleanup_fd,
     uint64_t *read_bytes, uint64_t *errflags, uint64_t *action_handle,
     nvlist_t **errors, nvlist_t **recv_info)
 {
 	(void) action_handle, (void) cleanup_fd;
 	return (recv_impl(snapname, props, cmdprops, wkeydata, wkeylen, origin,
-	    force, heal, resumable, raw, bclone_dedup, input_fd, begin_record,
-	    read_bytes, errflags, errors, recv_info));
+	    force, heal, resumable, raw, bclone_dedup, bclone_source, input_fd,
+	    begin_record, read_bytes, errflags, errors, recv_info));
 }
 
 /*

@@ -8,28 +8,40 @@
 . $STF_SUITE/tests/functional/bclone_dedup/bclone_dedup.cfg
 
 #
-# Get the last bclone_dedup stats line from dbgmsg.
+# Accumulate bclone_dedup stats from all lines in dbgmsg.
+# For recursive receives, each child produces its own stats line;
+# we sum hits/misses/deferred/bytes and take the last index_entries.
 # Returns: "hits misses deferred_misses bytes_cloned index_entries"
 #
 function get_bclone_dedup_stats
 {
-	typeset line
-	line=$(cat /proc/spl/kstat/zfs/dbgmsg 2>/dev/null | \
-	    grep "bclone_dedup:" | tail -1)
-	if [[ -z "$line" ]]; then
+	typeset lines
+	lines=$(cat /proc/spl/kstat/zfs/dbgmsg 2>/dev/null | \
+	    grep "dmu_recv.c:.*bclone_dedup:")
+	if [[ -z "$lines" ]]; then
 		echo "0 0 0 0 0"
 		return
 	fi
-	typeset hits=$(echo "$line" | sed -n 's/.*: \([0-9]*\) hits.*/\1/p')
-	typeset misses=$(echo "$line" | \
-	    sed -n 's/.* \([0-9]*\) misses.*/\1/p')
-	typeset deferred=$(echo "$line" | \
-	    sed -n 's/.*(\([0-9]*\) deferred).*/\1/p')
-	typeset bytes=$(echo "$line" | \
-	    sed -n 's/.* \([0-9]*\) bytes cloned.*/\1/p')
-	typeset entries=$(echo "$line" | \
-	    sed -n 's/.* \([0-9]*\) index entries.*/\1/p')
-	echo "${hits:-0} ${misses:-0} ${deferred:-0} ${bytes:-0} ${entries:-0}"
+	typeset total_hits=0 total_misses=0 total_deferred=0 total_bytes=0
+	typeset last_entries=0
+	while read line; do
+		typeset h=$(echo "$line" | \
+		    sed -n 's/.*: \([0-9]*\) hits.*/\1/p')
+		typeset m=$(echo "$line" | \
+		    sed -n 's/.* \([0-9]*\) misses.*/\1/p')
+		typeset d=$(echo "$line" | \
+		    sed -n 's/.*(\([0-9]*\) deferred).*/\1/p')
+		typeset b=$(echo "$line" | \
+		    sed -n 's/.* \([0-9]*\) bytes cloned.*/\1/p')
+		typeset e=$(echo "$line" | \
+		    sed -n 's/.* \([0-9]*\) index entries.*/\1/p')
+		total_hits=$((total_hits + ${h:-0}))
+		total_misses=$((total_misses + ${m:-0}))
+		total_deferred=$((total_deferred + ${d:-0}))
+		total_bytes=$((total_bytes + ${b:-0}))
+		last_entries=${e:-0}
+	done <<< "$lines"
+	echo "$total_hits $total_misses $total_deferred $total_bytes $last_entries"
 }
 
 #

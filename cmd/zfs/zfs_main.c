@@ -5145,8 +5145,10 @@ zfs_do_receive(int argc, char **argv)
 	if (nvlist_alloc(&props, NV_UNIQUE_NAME, 0) != 0)
 		nomem();
 
+	enum { OPT_BCLONE_SOURCE = 256 };
 	struct option long_options[] = {
 		{"bclone-dedup",  no_argument, NULL, 'B'},
+		{"bclone-source", required_argument, NULL, OPT_BCLONE_SOURCE},
 		{"force",         no_argument, NULL, 'F'},
 		{"verbose",       no_argument, NULL, 'v'},
 		{"force-unmount", no_argument, NULL, 'M'},
@@ -5222,6 +5224,10 @@ zfs_do_receive(int argc, char **argv)
 			break;
 		case 'B':
 			flags.bclone_dedup = B_TRUE;
+			break;
+		case OPT_BCLONE_SOURCE:
+			flags.bclone_dedup = B_TRUE;
+			flags.bclone_source = optarg;
 			break;
 		case ':':
 			(void) fprintf(stderr, gettext("missing argument for "

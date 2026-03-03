@@ -929,6 +929,9 @@ typedef struct recvflags {
 
 	/* use block cloning to deduplicate against existing destination data */
 	boolean_t bclone_dedup;
+
+	/* dataset to index FROM for cross-dataset block clone dedup */
+	const char *bclone_source;
 } recvflags_t;
 
 _LIBZFS_H int zfs_receive(libzfs_handle_t *, const char *, nvlist_t *,

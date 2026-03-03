@@ -5302,7 +5302,7 @@ static int
 zfs_ioc_recv_impl(char *tofs, char *tosnap, const char *origin,
     nvlist_t *recvprops, nvlist_t *localprops, nvlist_t *hidden_args,
     boolean_t force, boolean_t heal, boolean_t resumable,
-    boolean_t bclone_dedup, int input_fd,
+    boolean_t bclone_dedup, const char *bclone_source, int input_fd,
     dmu_replay_record_t *begin_record, uint64_t *read_bytes,
     uint64_t *errflags, nvlist_t **errors,
     uint64_t *out_bclone_hits, uint64_t *out_bclone_misses,
@@ -5332,17 +5332,80 @@ zfs_ioc_recv_impl(char *tofs, char *tosnap, const char *origin,
 	noff = off = zfs_file_off(input_fp);
 
 	/*
-	 * Block clone dedup (-B): build the checksum index from the original
-	 * destination dataset BEFORE dmu_recv_begin creates the temp clone.
-	 * We can safely hold/traverse/release the dataset here because no
-	 * recv machinery is running yet.
+	 * Block clone dedup (-B): build the checksum index from existing
+	 * datasets BEFORE dmu_recv_begin creates the temp clone.
+	 *
+	 * We index from two sources (both optional):
+	 *  1. bclone_source — an explicit cross-dataset source (e.g. parent
+	 *     dataset in a replication stream).  Indexed first so its entries
+	 *     get priority under the memory cap.
+	 *  2. tofs — the destination dataset itself (if it already exists).
+	 *
+	 * Both must be in the same pool (BRT is per-pool) and use a
+	 * cryptographic checksum.  The AVL tree deduplicates entries
+	 * naturally when both datasets share blocks.
 	 */
 	bclone_dedup_index_t *bdi = NULL;
 	if (bclone_dedup) {
+		bdi = bdi_create(zfs_recv_bclone_dedup_max_bytes);
+
+		/* Cross-dataset source: index from bclone_source first */
+		if (bclone_source != NULL &&
+		    strcmp(bclone_source, tofs) != 0) {
+			objset_t *src_os;
+			int src_err = dmu_objset_hold(bclone_source, FTAG,
+			    &src_os);
+			if (src_err == 0) {
+				/*
+				 * Validate same pool — BRT cloning across
+				 * pools always fails, so skip to avoid
+				 * building a useless index.  Use spa_name()
+				 * from the source to compare pool names;
+				 * we cannot hold two objsets from the same
+				 * pool simultaneously (dp_config_rwlock is
+				 * not re-entrant for readers).
+				 */
+				const char *src_pool = spa_name(
+				    dmu_objset_spa(src_os));
+				char dst_pool[ZFS_MAX_DATASET_NAME_LEN];
+				(void) strlcpy(dst_pool, tofs,
+				    sizeof (dst_pool));
+				char *slash = strchr(dst_pool, '/');
+				if (slash != NULL)
+					*slash = '\0';
+				boolean_t same_pool =
+				    (strcmp(src_pool, dst_pool) == 0);
+
+				if (!same_pool) {
+					dmu_objset_rele(src_os, FTAG);
+				} else if (!src_os->os_encrypted) {
+					enum zio_checksum cksum =
+					    src_os->os_checksum;
+					if (cksum != ZIO_CHECKSUM_SHA256 &&
+					    cksum != ZIO_CHECKSUM_SKEIN &&
+					    cksum != ZIO_CHECKSUM_EDONR &&
+					    cksum != ZIO_CHECKSUM_BLAKE3) {
+						dmu_objset_rele(src_os, FTAG);
+					} else {
+						(void) bdi_populate_from_dataset(
+						    bdi,
+						    dmu_objset_ds(src_os));
+						dmu_objset_rele(src_os, FTAG);
+					}
+				} else {
+					/* Encrypted — skip checksum check */
+					(void) bdi_populate_from_dataset(bdi,
+					    dmu_objset_ds(src_os));
+					dmu_objset_rele(src_os, FTAG);
+				}
+			}
+			/* ENOENT: source doesn't exist — silently skip */
+		}
+
+		/* Destination dataset: index from existing blocks */
 		objset_t *bdi_os;
 		error = dmu_objset_hold(tofs, FTAG, &bdi_os);
 		if (error == 0) {
-			bdi = bdi_create(zfs_recv_bclone_dedup_max_bytes);
 			error = bdi_populate_from_dataset(bdi,
 			    dmu_objset_ds(bdi_os));
 			dmu_objset_rele(bdi_os, FTAG);
@@ -5352,10 +5415,22 @@ zfs_ioc_recv_impl(char *tofs, char *tosnap, const char *origin,
 				goto out;
 			}
 		} else if (error == ENOENT) {
-			/* New dataset — nothing to index, proceed normally */
+			/*
+			 * New dataset — no destination blocks to index.
+			 * The index may still have entries from
+			 * bclone_source above.
+			 */
 			error = 0;
 		} else {
+			bdi_destroy(bdi);
+			bdi = NULL;
 			goto out;
+		}
+
+		/* If the index is empty, destroy it to save overhead */
+		if (bdi != NULL && bdi->bdi_count == 0) {
+			bdi_destroy(bdi);
+			bdi = NULL;
 		}
 	}
 
@@ -5725,9 +5800,9 @@ zfs_ioc_recv(zfs_cmd_t *zc)
 	begin_record.drr_u.drr_begin = zc->zc_begin_record;
 
 	error = zfs_ioc_recv_impl(tofs, tosnap, origin, recvdprops, localprops,
-	    NULL, zc->zc_guid, B_FALSE, B_FALSE, B_FALSE, zc->zc_cookie,
-	    &begin_record, &zc->zc_cookie, &zc->zc_obj, &errors,
-	    NULL, NULL, NULL, NULL);
+	    NULL, zc->zc_guid, B_FALSE, B_FALSE, B_FALSE, NULL,
+	    zc->zc_cookie, &begin_record, &zc->zc_cookie, &zc->zc_obj,
+	    &errors, NULL, NULL, NULL, NULL);
 
 	/*
 	 * Now that all props, initial and delayed, are set, report the prop
@@ -5787,6 +5862,7 @@ static const zfs_ioc_key_t zfs_keys_recv_new[] = {
 	{"force",		DATA_TYPE_BOOLEAN,	ZK_OPTIONAL},
 	{"heal",		DATA_TYPE_BOOLEAN,	ZK_OPTIONAL},
 	{"bclone_dedup",	DATA_TYPE_BOOLEAN,	ZK_OPTIONAL},
+	{"bclone_source",	DATA_TYPE_STRING,	ZK_OPTIONAL},
 	{"resumable",		DATA_TYPE_BOOLEAN,	ZK_OPTIONAL},
 	{"cleanup_fd",		DATA_TYPE_INT32,	ZK_OPTIONAL},
 	{"action_handle",	DATA_TYPE_UINT64,	ZK_OPTIONAL},
@@ -5843,6 +5919,9 @@ zfs_ioc_recv_new(const char *fsname, nvlist_t *innvl, nvlist_t *outnvl)
 
 	boolean_t bclone_dedup = nvlist_exists(innvl, "bclone_dedup");
 
+	const char *bclone_source = NULL;
+	(void) nvlist_lookup_string(innvl, "bclone_source", &bclone_source);
+
 	/* we still use "props" here for backwards compatibility */
 	error = nvlist_lookup_nvlist(innvl, "props", &recvprops);
 	if (error && error != ENOENT)
@@ -5860,8 +5939,8 @@ zfs_ioc_recv_new(const char *fsname, nvlist_t *innvl, nvlist_t *outnvl)
 	uint64_t bclone_bytes_cloned = 0, bclone_index_entries = 0;
 
 	error = zfs_ioc_recv_impl(tofs, tosnap, origin, recvprops, localprops,
-	    hidden_args, force, heal, resumable, bclone_dedup, input_fd,
-	    begin_record, &read_bytes, &errflags, &errors,
+	    hidden_args, force, heal, resumable, bclone_dedup, bclone_source,
+	    input_fd, begin_record, &read_bytes, &errflags, &errors,
 	    bclone_dedup ? &bclone_hits : NULL,
 	    bclone_dedup ? &bclone_misses : NULL,
 	    bclone_dedup ? &bclone_bytes_cloned : NULL,

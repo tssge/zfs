@@ -85,7 +85,10 @@ tests = ['bclone_dedup_full_rerecv',
     'bclone_dedup_mem_cap',
     'bclone_dedup_resume',
     'bclone_dedup_mixed_cksum',
-    'bclone_dedup_fallback']
+    'bclone_dedup_fallback',
+    'bclone_dedup_cross_dataset',
+    'bclone_dedup_recursive',
+    'bclone_dedup_large_blocks']
 tags = ['functional', 'bclone_dedup']
 
 [tests/functional/block_cloning]
