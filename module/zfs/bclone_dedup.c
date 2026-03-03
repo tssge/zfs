@@ -150,7 +150,8 @@ bdi_populate_from_dataset(bclone_dedup_index_t *bdi, dsl_dataset_t *ds)
 	int err;
 
 	err = traverse_dataset(ds, 0,
-	    TRAVERSE_PRE | TRAVERSE_PREFETCH_METADATA, bdi_traverse_cb, bdi);
+	    TRAVERSE_PRE | TRAVERSE_PREFETCH_METADATA | TRAVERSE_NO_DECRYPT,
+	    bdi_traverse_cb, bdi);
 
 	if (err == 0) {
 		zfs_dbgmsg("bclone_dedup: indexed %llu entries (%llu bytes) "

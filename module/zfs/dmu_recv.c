@@ -702,13 +702,25 @@ dmu_recv_begin_check(void *arg, dmu_tx_t *tx)
 		if (drba->drba_cookie->drc_bclone_dedup) {
 			objset_t *os;
 			int ckerr = dmu_objset_from_ds(ds, &os);
-			if (ckerr == 0) {
-				zio_prop_t zp;
-				dmu_write_policy(os, NULL, 0, 0, &zp);
-				if (zp.zp_checksum != ZIO_CHECKSUM_SHA256 &&
-				    zp.zp_checksum != ZIO_CHECKSUM_SKEIN &&
-				    zp.zp_checksum != ZIO_CHECKSUM_EDONR &&
-				    zp.zp_checksum != ZIO_CHECKSUM_BLAKE3) {
+			if (ckerr == 0 && !os->os_encrypted) {
+				/*
+				 * For unencrypted datasets, check that the
+				 * checksum algorithm is cryptographic.
+				 * Non-cryptographic checksums (fletcher4,
+				 * fletcher2) are NOT collision-resistant —
+				 * cloning based on a false match would cause
+				 * silent data corruption.
+				 *
+				 * Skip for encrypted datasets: the checksum
+				 * property may not be readable without the
+				 * key loaded (raw receive), and the per-record
+				 * algorithm check handles mismatches anyway.
+				 */
+				enum zio_checksum cksum = os->os_checksum;
+				if (cksum != ZIO_CHECKSUM_SHA256 &&
+				    cksum != ZIO_CHECKSUM_SKEIN &&
+				    cksum != ZIO_CHECKSUM_EDONR &&
+				    cksum != ZIO_CHECKSUM_BLAKE3) {
 					dsl_dataset_rele_flags(ds, dsflags,
 					    FTAG);
 					return (SET_ERROR(ENOTSUP));
