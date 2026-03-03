@@ -58,6 +58,28 @@ function verify_bclonesaved
 }
 
 #
+# Parse bclone_dedup verbose output from stderr/stdout of "zfs recv -Bv".
+# Returns: "hits misses bytes_cloned index_entries"
+#
+function get_bclone_dedup_verbose_stats
+{
+	typeset output="$1"
+	typeset line
+	line=$(echo "$output" | grep "^bclone_dedup:" | tail -1)
+	if [[ -z "$line" ]]; then
+		echo "0 0 0 0"
+		return
+	fi
+	typeset hits=$(echo "$line" | \
+	    sed -n 's/.*: \([0-9]*\) blocks cloned.*/\1/p')
+	typeset misses=$(echo "$line" | \
+	    sed -n 's/.* \([0-9]*\) misses.*/\1/p')
+	typeset entries=$(echo "$line" | \
+	    sed -n 's/.* \([0-9]*\) index entries.*/\1/p')
+	echo "${hits:-0} ${misses:-0} ${entries:-0}"
+}
+
+#
 # Send a dataset/snapshot with given flags, receive with -B and optional
 # extra flags.  Verifies the receive succeeds.
 #

@@ -80,6 +80,12 @@ typedef struct dmu_recv_cookie {
 	zio_cksum_t drc_prev_cksum;
 	/* Sorted list of objects not to issue prefetches for. */
 	objlist_t *drc_ignore_objlist;
+
+	/* bclone_dedup stats (populated by dmu_recv_stream) */
+	uint64_t drc_bclone_hits;
+	uint64_t drc_bclone_misses;
+	uint64_t drc_bclone_bytes_cloned;
+	uint64_t drc_bclone_index_entries;
 } dmu_recv_cookie_t;
 
 int dmu_recv_begin(const char *, const char *, dmu_replay_record_t *,

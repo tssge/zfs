@@ -5042,12 +5042,13 @@ zfs_receive_one(libzfs_handle_t *hdl, int infd, const char *tosnap,
 		goto out;
 	}
 
+	nvlist_t *recv_info = NULL;
 	if (flags->heal || flags->bclone_dedup) {
-		err = ioctl_err = lzc_receive_with_heal(destsnap, rcvprops,
+		err = ioctl_err = lzc_receive_with_info(destsnap, rcvprops,
 		    oxprops, wkeydata, wkeylen, origin, flags->force,
 		    flags->heal, flags->resumable, raw,
 		    flags->bclone_dedup, infd, drr_noswap, -1,
-		    &read_bytes, &errflags, NULL, &prop_errors);
+		    &read_bytes, &errflags, NULL, &prop_errors, &recv_info);
 	} else {
 		err = ioctl_err = lzc_receive_with_cmdprops(destsnap, rcvprops,
 		    oxprops, wkeydata, wkeylen, origin, flags->force,
@@ -5367,12 +5368,34 @@ zfs_receive_one(libzfs_handle_t *hdl, int infd, const char *tosnap,
 
 		(void) printf("received %s stream in %.2f seconds (%s/sec)\n",
 		    buf1, delta_f, buf2);
+
+		if (recv_info != NULL) {
+			uint64_t hits = 0, misses = 0;
+			uint64_t cloned = 0, entries = 0;
+			(void) nvlist_lookup_uint64(recv_info,
+			    "bclone_hits", &hits);
+			(void) nvlist_lookup_uint64(recv_info,
+			    "bclone_misses", &misses);
+			(void) nvlist_lookup_uint64(recv_info,
+			    "bclone_bytes_cloned", &cloned);
+			(void) nvlist_lookup_uint64(recv_info,
+			    "bclone_index_entries", &entries);
+			char cbuf[64];
+			zfs_nicebytes(cloned, cbuf, sizeof (cbuf));
+			(void) printf("bclone_dedup: %llu blocks cloned "
+			    "(%s), %llu misses, %llu index entries\n",
+			    (u_longlong_t)hits, cbuf,
+			    (u_longlong_t)misses,
+			    (u_longlong_t)entries);
+		}
 	}
 
 	err = 0;
 out:
 	if (prop_errors != NULL)
 		fnvlist_free(prop_errors);
+
+	nvlist_free(recv_info);
 
 	if (tmp_keylocation[0] != '\0') {
 		fnvlist_add_string(rcvprops,

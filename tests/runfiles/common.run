@@ -79,7 +79,8 @@ tests = ['bclone_dedup_full_rerecv',
     'bclone_dedup_no_overlap',
     'bclone_dedup_uncompressed_rejected',
     'bclone_dedup_fletcher_noop',
-    'bclone_dedup_noncrypto_rejected']
+    'bclone_dedup_noncrypto_rejected',
+    'bclone_dedup_verbose']
 tags = ['functional', 'bclone_dedup']
 
 [tests/functional/block_cloning]

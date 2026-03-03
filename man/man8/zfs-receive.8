@@ -275,6 +275,10 @@ Compatible with
 .Fl s
 .Pq resumable ;
 the flag is encoded in the resume token and the index is rebuilt on resume.
+When combined with
+.Fl v ,
+a summary line is printed after completion showing the number of blocks cloned,
+misses, and index size.
 .Pp
 Does not deduplicate across datasets.
 .It Fl F

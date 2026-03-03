@@ -1049,7 +1049,7 @@ recv_impl(const char *snapname, nvlist_t *recvdprops, nvlist_t *localprops,
     boolean_t heal, boolean_t resumable, boolean_t raw,
     boolean_t bclone_dedup, int input_fd,
     const dmu_replay_record_t *begin_record, uint64_t *read_bytes,
-    uint64_t *errflags, nvlist_t **errors)
+    uint64_t *errflags, nvlist_t **errors, nvlist_t **recv_info)
 {
 	dmu_replay_record_t drr;
 	char fsname[MAXPATHLEN];
@@ -1166,6 +1166,37 @@ recv_impl(const char *snapname, nvlist_t *recvdprops, nvlist_t *localprops,
 				*errors = fnvlist_dup(nvl);
 		}
 
+		if (recv_info != NULL) {
+			*recv_info = NULL;
+			if (outnvl != NULL) {
+				uint64_t val;
+				nvlist_t *info = fnvlist_alloc();
+				boolean_t has = B_FALSE;
+				if (nvlist_lookup_uint64(outnvl,
+				    "bclone_hits", &val) == 0) {
+					fnvlist_add_uint64(info,
+					    "bclone_hits", val);
+					has = B_TRUE;
+				}
+				if (nvlist_lookup_uint64(outnvl,
+				    "bclone_misses", &val) == 0)
+					fnvlist_add_uint64(info,
+					    "bclone_misses", val);
+				if (nvlist_lookup_uint64(outnvl,
+				    "bclone_bytes_cloned", &val) == 0)
+					fnvlist_add_uint64(info,
+					    "bclone_bytes_cloned", val);
+				if (nvlist_lookup_uint64(outnvl,
+				    "bclone_index_entries", &val) == 0)
+					fnvlist_add_uint64(info,
+					    "bclone_index_entries", val);
+				if (has)
+					*recv_info = info;
+				else
+					fnvlist_free(info);
+			}
+		}
+
 		fnvlist_free(innvl);
 		fnvlist_free(outnvl);
 	} else {
@@ -1227,6 +1258,9 @@ recv_impl(const char *snapname, nvlist_t *recvdprops, nvlist_t *localprops,
 		if (lp_packed != NULL)
 			fnvlist_pack_free(lp_packed, size);
 		free((void *)(uintptr_t)zc.zc_nvlist_dst);
+
+		if (recv_info != NULL)
+			*recv_info = NULL;
 	}
 
 	return (error);
@@ -1250,7 +1284,8 @@ lzc_receive(const char *snapname, nvlist_t *props, const char *origin,
     boolean_t force, boolean_t raw, int fd)
 {
 	return (recv_impl(snapname, props, NULL, NULL, 0, origin, force,
-	    B_FALSE, B_FALSE, raw, B_FALSE, fd, NULL, NULL, NULL, NULL));
+	    B_FALSE, B_FALSE, raw, B_FALSE, fd, NULL, NULL, NULL, NULL,
+	    NULL));
 }
 
 /*
@@ -1264,7 +1299,8 @@ lzc_receive_resumable(const char *snapname, nvlist_t *props, const char *origin,
     boolean_t force, boolean_t raw, int fd)
 {
 	return (recv_impl(snapname, props, NULL, NULL, 0, origin, force,
-	    B_FALSE, B_TRUE, raw, B_FALSE, fd, NULL, NULL, NULL, NULL));
+	    B_FALSE, B_TRUE, raw, B_FALSE, fd, NULL, NULL, NULL, NULL,
+	    NULL));
 }
 
 /*
@@ -1288,7 +1324,7 @@ lzc_receive_with_header(const char *snapname, nvlist_t *props,
 
 	return (recv_impl(snapname, props, NULL, NULL, 0, origin, force,
 	    B_FALSE, resumable, raw, B_FALSE, fd, begin_record,
-	    NULL, NULL, NULL));
+	    NULL, NULL, NULL, NULL));
 }
 
 /*
@@ -1319,7 +1355,7 @@ lzc_receive_one(const char *snapname, nvlist_t *props,
 	(void) action_handle, (void) cleanup_fd;
 	return (recv_impl(snapname, props, NULL, NULL, 0, origin, force,
 	    B_FALSE, resumable, raw, B_FALSE, input_fd, begin_record,
-	    read_bytes, errflags, errors));
+	    read_bytes, errflags, errors, NULL));
 }
 
 /*
@@ -1341,7 +1377,7 @@ lzc_receive_with_cmdprops(const char *snapname, nvlist_t *props,
 	(void) action_handle, (void) cleanup_fd;
 	return (recv_impl(snapname, props, cmdprops, wkeydata, wkeylen, origin,
 	    force, B_FALSE, resumable, raw, B_FALSE, input_fd, begin_record,
-	    read_bytes, errflags, errors));
+	    read_bytes, errflags, errors, NULL));
 }
 
 /*
@@ -1362,7 +1398,27 @@ int lzc_receive_with_heal(const char *snapname, nvlist_t *props,
 	(void) action_handle, (void) cleanup_fd;
 	return (recv_impl(snapname, props, cmdprops, wkeydata, wkeylen, origin,
 	    force, heal, resumable, raw, bclone_dedup, input_fd, begin_record,
-	    read_bytes, errflags, errors));
+	    read_bytes, errflags, errors, NULL));
+}
+
+/*
+ * Like lzc_receive_with_heal, but also returns recv_info — an nvlist
+ * containing bclone_dedup statistics (hits, misses, bytes_cloned,
+ * index_entries) when block-clone dedup is active.  Callers are responsible
+ * for freeing recv_info.
+ */
+int lzc_receive_with_info(const char *snapname, nvlist_t *props,
+    nvlist_t *cmdprops, uint8_t *wkeydata, uint_t wkeylen, const char *origin,
+    boolean_t force, boolean_t heal, boolean_t resumable, boolean_t raw,
+    boolean_t bclone_dedup, int input_fd,
+    const dmu_replay_record_t *begin_record, int cleanup_fd,
+    uint64_t *read_bytes, uint64_t *errflags, uint64_t *action_handle,
+    nvlist_t **errors, nvlist_t **recv_info)
+{
+	(void) action_handle, (void) cleanup_fd;
+	return (recv_impl(snapname, props, cmdprops, wkeydata, wkeylen, origin,
+	    force, heal, resumable, raw, bclone_dedup, input_fd, begin_record,
+	    read_bytes, errflags, errors, recv_info));
 }
 
 /*

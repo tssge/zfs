@@ -3773,6 +3773,10 @@ dmu_recv_stream(dmu_recv_cookie_t *drc, offset_t *voffp)
 		    (u_longlong_t)rwa->bdi->bdi_deferred_misses,
 		    (u_longlong_t)rwa->bdi->bdi_cloned_bytes,
 		    (u_longlong_t)rwa->bdi->bdi_count);
+		drc->drc_bclone_hits = rwa->bdi->bdi_hits;
+		drc->drc_bclone_misses = rwa->bdi->bdi_misses;
+		drc->drc_bclone_bytes_cloned = rwa->bdi->bdi_cloned_bytes;
+		drc->drc_bclone_index_entries = rwa->bdi->bdi_count;
 		bdi_destroy(rwa->bdi);
 		rwa->bdi = NULL;
 	}

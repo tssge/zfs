@@ -5304,7 +5304,9 @@ zfs_ioc_recv_impl(char *tofs, char *tosnap, const char *origin,
     boolean_t force, boolean_t heal, boolean_t resumable,
     boolean_t bclone_dedup, int input_fd,
     dmu_replay_record_t *begin_record, uint64_t *read_bytes,
-    uint64_t *errflags, nvlist_t **errors)
+    uint64_t *errflags, nvlist_t **errors,
+    uint64_t *out_bclone_hits, uint64_t *out_bclone_misses,
+    uint64_t *out_bclone_bytes_cloned, uint64_t *out_bclone_index_entries)
 {
 	dmu_recv_cookie_t drc;
 	int error = 0;
@@ -5547,6 +5549,13 @@ zfs_ioc_recv_impl(char *tofs, char *tosnap, const char *origin,
 	}
 	*read_bytes = off - noff;
 
+	if (out_bclone_hits != NULL) {
+		*out_bclone_hits = drc.drc_bclone_hits;
+		*out_bclone_misses = drc.drc_bclone_misses;
+		*out_bclone_bytes_cloned = drc.drc_bclone_bytes_cloned;
+		*out_bclone_index_entries = drc.drc_bclone_index_entries;
+	}
+
 #ifdef	ZFS_DEBUG
 	if (zfs_ioc_recv_inject_err) {
 		zfs_ioc_recv_inject_err = B_FALSE;
@@ -5717,7 +5726,8 @@ zfs_ioc_recv(zfs_cmd_t *zc)
 
 	error = zfs_ioc_recv_impl(tofs, tosnap, origin, recvdprops, localprops,
 	    NULL, zc->zc_guid, B_FALSE, B_FALSE, B_FALSE, zc->zc_cookie,
-	    &begin_record, &zc->zc_cookie, &zc->zc_obj, &errors);
+	    &begin_record, &zc->zc_cookie, &zc->zc_obj, &errors,
+	    NULL, NULL, NULL, NULL);
 
 	/*
 	 * Now that all props, initial and delayed, are set, report the prop
@@ -5761,6 +5771,10 @@ out:
  *     "read_bytes" -> number of bytes read
  *     "error_flags" -> zprop_errflags_t
  *     "errors" -> error for each unapplied received property (nvlist)
+ *     (optional) "bclone_hits" -> blocks dedup-cloned (when bclone_dedup)
+ *     (optional) "bclone_misses" -> blocks not matched (when bclone_dedup)
+ *     (optional) "bclone_bytes_cloned" -> bytes saved by cloning
+ *     (optional) "bclone_index_entries" -> index size
  * }
  */
 static const zfs_ioc_key_t zfs_keys_recv_new[] = {
@@ -5842,13 +5856,28 @@ zfs_ioc_recv_new(const char *fsname, nvlist_t *innvl, nvlist_t *outnvl)
 	if (error && error != ENOENT)
 		goto out;
 
+	uint64_t bclone_hits = 0, bclone_misses = 0;
+	uint64_t bclone_bytes_cloned = 0, bclone_index_entries = 0;
+
 	error = zfs_ioc_recv_impl(tofs, tosnap, origin, recvprops, localprops,
 	    hidden_args, force, heal, resumable, bclone_dedup, input_fd,
-	    begin_record, &read_bytes, &errflags, &errors);
+	    begin_record, &read_bytes, &errflags, &errors,
+	    bclone_dedup ? &bclone_hits : NULL,
+	    bclone_dedup ? &bclone_misses : NULL,
+	    bclone_dedup ? &bclone_bytes_cloned : NULL,
+	    bclone_dedup ? &bclone_index_entries : NULL);
 
 	fnvlist_add_uint64(outnvl, "read_bytes", read_bytes);
 	fnvlist_add_uint64(outnvl, "error_flags", errflags);
 	fnvlist_add_nvlist(outnvl, "errors", errors);
+	if (bclone_dedup) {
+		fnvlist_add_uint64(outnvl, "bclone_hits", bclone_hits);
+		fnvlist_add_uint64(outnvl, "bclone_misses", bclone_misses);
+		fnvlist_add_uint64(outnvl, "bclone_bytes_cloned",
+		    bclone_bytes_cloned);
+		fnvlist_add_uint64(outnvl, "bclone_index_entries",
+		    bclone_index_entries);
+	}
 
 out:
 	nvlist_free(errors);
