@@ -30,7 +30,7 @@
 .\" Copyright 2018 Nexenta Systems, Inc.
 .\" Copyright 2019 Joyent, Inc.
 .\"
-.Dd March 12, 2023
+.Dd March 4, 2026
 .Dt ZFS-RECEIVE 8
 .Os
 .
@@ -41,6 +41,7 @@
 .Nm zfs
 .Cm receive
 .Op Fl BFhMnsuv
+.Op Fl -bclone-source Ar dataset
 .Op Fl o Sy origin Ns = Ns Ar snapshot
 .Op Fl o Ar property Ns = Ns Ar value
 .Op Fl x Ar property
@@ -48,6 +49,7 @@
 .Nm zfs
 .Cm receive
 .Op Fl BFhMnsuv
+.Op Fl -bclone-source Ar dataset
 .Op Fl d Ns | Ns Fl e
 .Op Fl o Sy origin Ns = Ns Ar snapshot
 .Op Fl o Ar property Ns = Ns Ar value
@@ -69,6 +71,7 @@
 .Nm zfs
 .Cm receive
 .Op Fl BFhMnsuv
+.Op Fl -bclone-source Ar dataset
 .Op Fl o Sy origin Ns = Ns Ar snapshot
 .Op Fl o Ar property Ns = Ns Ar value
 .Op Fl x Ar property
@@ -78,6 +81,7 @@
 .Nm zfs
 .Cm receive
 .Op Fl BFhMnsuv
+.Op Fl -bclone-source Ar dataset
 .Op Fl d Ns | Ns Fl e
 .Op Fl o Sy origin Ns = Ns Ar snapshot
 .Op Fl o Ar property Ns = Ns Ar value

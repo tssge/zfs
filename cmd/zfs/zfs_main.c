@@ -329,9 +329,11 @@ get_usage(zfs_help_t idx)
 		return (gettext("\tpromote <clone-filesystem>\n"));
 	case HELP_RECEIVE:
 		return (gettext("\treceive [-BvMnsFhu] "
-		    "[-o <property>=<value>] ... [-x <property>] ...\n"
+		    "[--bclone-source <dataset>]\n"
+		    "\t    [-o <property>=<value>] ... [-x <property>] ...\n"
 		    "\t    <filesystem|volume|snapshot>\n"
-		    "\treceive [-BvMnsFhu] [-o <property>=<value>] ... "
+		    "\treceive [-BvMnsFhu] [--bclone-source <dataset>]\n"
+		    "\t    [-o <property>=<value>] ... "
 		    "[-x <property>] ... \n"
 		    "\t    [-d | -e] <filesystem>\n"
 		    "\treceive -A <filesystem|volume>\n"));
