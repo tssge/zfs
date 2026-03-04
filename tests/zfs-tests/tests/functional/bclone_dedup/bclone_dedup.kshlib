@@ -53,25 +53,8 @@ function clear_bclone_dedup_stats
 }
 
 #
-# Verify that bclonesaved on the pool is greater than zero.
-#
-function verify_bclonesaved
-{
-	typeset pool=$1
-	typeset saved
-	saved=$(get_pool_prop bcloneused "$pool")
-	if [[ "$saved" -gt 0 ]]; then
-		log_note "bclonesaved is $saved (> 0), as expected"
-		return 0
-	else
-		log_note "bclonesaved is $saved"
-		return 1
-	fi
-}
-
-#
 # Parse bclone_dedup verbose output from stderr/stdout of "zfs recv -Bv".
-# Returns: "hits misses bytes_cloned index_entries"
+# Returns: "hits misses index_entries"
 #
 function get_bclone_dedup_verbose_stats
 {

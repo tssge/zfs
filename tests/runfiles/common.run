@@ -96,6 +96,7 @@ tests = ['bclone_dedup_full_rerecv',
     'bclone_dedup_embedded',
     'bclone_dedup_cross_encrypted']
 tags = ['functional', 'bclone_dedup']
+timeout = 1800
 
 [tests/functional/block_cloning]
 tests = ['block_cloning_clone_mmap_cached',

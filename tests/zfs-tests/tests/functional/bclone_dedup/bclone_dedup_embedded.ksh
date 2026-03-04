@@ -33,7 +33,7 @@ log_must zfs create -o checksum=sha256 -o compression=lz4 $SRCFS
 
 # Write small compressible files (likely embedded) and one larger file
 for i in $(seq 1 20); do
-	log_must eval "printf '%0.s0' {1..512} > $SRCDIR/small_$i"
+	log_must eval "printf '%0512d' 0 > $SRCDIR/small_$i"
 done
 # Also write a normal-sized file for non-embedded blocks
 log_must dd if=/dev/urandom of=$SRCDIR/large bs=128K count=8

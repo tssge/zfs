@@ -22,6 +22,7 @@ log_assert $claim
 
 function cleanup
 {
+	restore_tunable TXG_TIMEOUT
 	datasetexists $TESTPOOL && destroy_pool $TESTPOOL
 }
 

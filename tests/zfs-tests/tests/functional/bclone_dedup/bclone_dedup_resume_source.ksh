@@ -49,7 +49,7 @@ log_note "Full stream size: $filesize bytes"
 
 # Truncate to ~half to simulate interrupted receive
 typeset truncsize=$(($filesize / 2))
-log_must dd if=$streamfile of=$partialfile bs=1 count=$truncsize
+log_must eval "head -c $truncsize $streamfile > $partialfile"
 
 #
 # Part 1: Resume with source still present

@@ -50,7 +50,7 @@ log_note "Full stream size: $filesize bytes"
 
 # Truncate to ~half to simulate interrupted receive
 typeset truncsize=$(($filesize / 2))
-log_must dd if=$streamfile of=$partialfile bs=1 count=$truncsize
+log_must eval "head -c $truncsize $streamfile > $partialfile"
 
 # Attempt resumable recv with -sBF — will fail due to truncation
 log_mustnot eval "zfs recv -sBF -o checksum=sha256 $DSTFS < $partialfile"

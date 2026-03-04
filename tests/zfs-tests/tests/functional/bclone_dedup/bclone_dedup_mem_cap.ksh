@@ -35,7 +35,7 @@ log_must zfs snapshot $SRCFS@snap1
 log_must eval "zfs send -c $SRCFS@snap1 | zfs recv -o checksum=sha256 $DSTFS"
 
 # Set memory cap very low (~4KB, allows roughly 16 index entries)
-save_tunable RECV_BCLONE_DEDUP_MAX_BYTES
+log_must save_tunable RECV_BCLONE_DEDUP_MAX_BYTES
 log_must set_tunable64 RECV_BCLONE_DEDUP_MAX_BYTES 4096
 
 # Clear stats
