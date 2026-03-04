@@ -52,7 +52,6 @@ typedef struct fiemap_args {
 	boolean_t	fa_verify_size;
 	boolean_t	fa_verify_hole;
 	boolean_t	fa_verify_flags;
-	boolean_t	fa_verify_dev;
 	boolean_t	fa_verify_extent_count;
 	avl_tree_t	fa_verify_trees[2];
 	unsigned	fa_verify_sizes[2];
@@ -60,9 +59,6 @@ typedef struct fiemap_args {
 	char		*fa_verify_flags_str;
 	verify_mode_t	fa_verify_flags_mode;
 	int		fa_verify_flags_count;
-	unsigned	fa_verify_dev_id;
-	verify_mode_t	fa_verify_dev_mode;
-	int		fa_verify_dev_count;
 	int		fa_verify_extent_expected;
 	unsigned	fa_max_extents;
 	boolean_t	fa_verify_physical;
@@ -76,7 +72,7 @@ typedef struct fiemap_args {
 static boolean_t
 fiemap_extent_is_hole(struct fiemap_extent *ext)
 {
-	return (ext->fe_physical == 0 && ext->fe_physical_length_reserved == 0 &&
+	return (ext->fe_physical == 0 &&
 	    !(ext->fe_flags & (FIEMAP_EXTENT_DATA_INLINE |
 	    FIEMAP_EXTENT_DATA_ENCRYPTED | FIEMAP_EXTENT_ENCODED |
 	    FIEMAP_EXTENT_DELALLOC)));
@@ -87,8 +83,7 @@ usage(const char *msg, int exit_value)
 {
 	(void) fprintf(stderr, "fiemap [-achsPv?] "
 	    "[[-DH] <offset:length:refs>] [-F <flags:[=<>count>]\n"
-	    "    [-V <vdev:[=<>]count>] [-E extent-count] "
-	    "[-m max-extents] filename\n");
+	    "    [-E extent-count] [-m max-extents] filename\n");
 
 	if (msg != NULL)
 		(void) fprintf(stderr, "%s\n", msg);
@@ -214,7 +209,7 @@ fiemap_extent_str(struct fiemap_extent *extent, int type, char *str, int size)
 		break;
 	case PRINT_PHYSICAL:
 		if (!fiemap_extent_is_hole(extent)) {
-			len = extent->fe_physical_length_reserved;
+			len = extent->fe_length;
 			start = extent->fe_physical;
 			if (start || len)
 				end = extent->fe_physical + len - 1;
@@ -234,17 +229,16 @@ fiemap_print(fiemap_args_t *fa)
 	char lstr[64], pstr[64], fstr[128];
 
 	printf("Extents: %u\n", fa->fa_fiemap->fm_mapped_extents);
-	printf("%-4s %-39s %-39s %-3s %-s\n", "ID",
+	printf("%-4s %-39s %-39s %-s\n", "ID",
 	    "Logical (Start-End Length)", "Physical (Start-End Length)",
-	    "Dev", "Flags");
+	    "Flags");
 
 	for (int i = 0; i < fa->fa_fiemap->fm_mapped_extents; i++) {
 		struct fiemap_extent *extent = &fa->fa_fiemap->fm_extents[i];
 
-		printf("%-4d %s %s %-3u %s\n", i,
+		printf("%-4d %s %s %s\n", i,
 		    fiemap_extent_str(extent, PRINT_LOGICAL, lstr, 64),
 		    fiemap_extent_str(extent, PRINT_PHYSICAL, pstr, 64),
-		    extent->fe_device_reserved,
 		    fiemap_extent_flags_str(extent, fstr, 128));
 	}
 }
@@ -280,7 +274,8 @@ fiemap_verify_extent_dec(void *arg, uint64_t start, uint64_t size)
 }
 
 /*
- * When a logical extent mapping has been provided, using -V, verify it
+ * When a logical extent mapping has been provided (for example with -D/-H),
+ * verify it
  * against the list of returned extents.  This is accomplished by first
  * building up a reference tree of all the expected logical extents.
  * Then for each extent reported by FIEMAP decrease the reference counts.
@@ -481,67 +476,6 @@ fiemap_verify_flags(fiemap_args_t *fa)
 }
 
 /*
- * When a list of extent device ids has been provided verify that a certain
- * number of extents have the specified device id.  VERIFY_MODE_ALL can be
- * used to indicate that all extents must be for the device id.
- */
-static int
-fiemap_verify_device(fiemap_args_t *fa)
-{
-	int count = 0, error = 0;
-
-	for (int i = 0; i < fa->fa_fiemap->fm_mapped_extents; i++) {
-		struct fiemap_extent *extent = &fa->fa_fiemap->fm_extents[i];
-
-		if (extent->fe_device_reserved == fa->fa_verify_dev_id)
-			count++;
-	}
-
-	switch (fa->fa_verify_dev_mode) {
-	case VERIFY_MODE_EQUAL:
-		if (count != fa->fa_verify_dev_count) {
-			printf("Exactly %d extents for device '%u' required, "
-			    "%d found\n", fa->fa_verify_dev_count,
-			    fa->fa_verify_dev_id, count);
-			error = EDOM;
-		}
-		break;
-	case VERIFY_MODE_GT:
-		if (count <= fa->fa_verify_dev_count) {
-			printf("Greater than %d extents for device '%u' "
-			    "required, %d found\n", fa->fa_verify_dev_count,
-			    fa->fa_verify_dev_id, count);
-			error = EDOM;
-		}
-		break;
-	case VERIFY_MODE_LT:
-		if (count >= fa->fa_verify_dev_count) {
-			printf("Fewer than %d extents for device '%u' "
-			    "required, %d found\n", fa->fa_verify_dev_count,
-			    fa->fa_verify_dev_id, count);
-			error = EDOM;
-		}
-		break;
-	case VERIFY_MODE_ALL:
-		if (count != fa->fa_fiemap->fm_mapped_extents) {
-			printf("All %d extents for device '%u' required, "
-			    "%d found\n", fa->fa_fiemap->fm_mapped_extents,
-			    fa->fa_verify_dev_id, count);
-			error = EDOM;
-		} else if (count == 0) {
-			printf("No extents for device '%u' were found\n",
-			    fa->fa_verify_dev_id);
-			error = EDOM;
-		}
-		break;
-	default:
-		error = EINVAL;
-	}
-
-	return (error);
-}
-
-/*
  * Verify the reported extents cover the entire requested range.  This will
  * only be the case for sparse files when FIEMAP_FLAG_HOLES has been set and
  * holes are reported.
@@ -646,16 +580,13 @@ fiemap_verify(fiemap_args_t *fa)
 	if (fa->fa_verify_flags == B_TRUE && fiemap_verify_flags(fa))
 		error |= 0x10;
 
-	if (fa->fa_verify_dev == B_TRUE && fiemap_verify_device(fa))
-		error |= 0x20;
-
 	if (fa->fa_verify_extent_count == B_TRUE &&
 	    fiemap_verify_extent_count(fa))
-		error |= 0x40;
+		error |= 0x20;
 
 	if (fa->fa_verify_physical == B_TRUE &&
 	    fiemap_verify_physical(fa))
-		error |= 0x80;
+		error |= 0x40;
 
 	return (error);
 }
@@ -702,12 +633,11 @@ main(int argc, char *argv[])
 	char *filename, *flags, *s;
 	unsigned long long offset, length;
 	long long refs;
-	unsigned dev;
 	int c, error, matched;
 
 	fiemap_init(&fa);
 
-	while ((c = getopt(argc, argv, "achsPvD:E:H:F:V:m:?")) != -1) {
+	while ((c = getopt(argc, argv, "achsPvD:E:H:F:m:?")) != -1) {
 		switch (c) {
 		case 'a':
 			fa.fa_flags |= FIEMAP_FLAG_NOMERGE;
@@ -760,35 +690,6 @@ main(int argc, char *argv[])
 			space_reftree_add_seg(
 			    &fa.fa_verify_trees[VERIFY_HOLE_TREE],
 			    offset, offset + length, refs);
-			break;
-		case 'V':
-			matched = sscanf(optarg, "%u:%m[0-9a-z<>=-]", &dev, &s);
-			if (matched != 2) {
-				error = usage(
-				    "Use -V <device:[<>=]count|all>", 1);
-				goto out;
-			}
-
-			if (strncmp(s, "all", 3) == 0) {
-				fa.fa_verify_dev_mode = VERIFY_MODE_ALL;
-				fa.fa_verify_dev_count = 0;
-			} else if (s[0] == '=') {
-				fa.fa_verify_dev_mode = VERIFY_MODE_EQUAL;
-				fa.fa_verify_dev_count = strtol(s+1, NULL, 0);
-			} else if (s[0] == '<') {
-				fa.fa_verify_dev_mode = VERIFY_MODE_LT;
-				fa.fa_verify_dev_count = strtol(s+1, NULL, 0);
-			} else if (s[0] == '>') {
-				fa.fa_verify_dev_mode = VERIFY_MODE_GT;
-				fa.fa_verify_dev_count = strtol(s+1, NULL, 0);
-			} else {
-				fa.fa_verify_dev_mode = VERIFY_MODE_EQUAL;
-				fa.fa_verify_dev_count = strtol(s, NULL, 0);
-			}
-
-			fa.fa_verify_dev = B_TRUE;
-			fa.fa_verify_dev_id = dev;
-			free(s);
 			break;
 		case 'F':
 			if (fa.fa_verify_flags == B_TRUE) {

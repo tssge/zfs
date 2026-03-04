@@ -94,3 +94,116 @@ function fiemap_verify # options
 		log_must fiemap -v $@ $FIEMAP_FILE
 	fi
 }
+
+function fiemap_get_vdev_asize # pool vdev-path
+{
+	typeset pool=$1
+	typeset vdev=$2
+
+	zpool list -v -p "$pool" | \
+	    awk -v dev="$vdev" '$1 == dev { print $2; found = 1; exit }
+	    END { if (!found) exit 1 }'
+}
+
+function fiemap_get_last_vdev # pool
+{
+	typeset pool=$1
+
+	zpool list -v -p "$pool" | \
+	    awk -v pool="$pool" '
+	    $1 == pool { next }
+	    $2 ~ /^[0-9]+$/ { last = $1 }
+	    END { if (last == "") exit 1; print last }'
+}
+
+function fiemap_get_vdev_base # pool vdev-path
+{
+	typeset pool=$1
+	typeset vdev=$2
+
+	zpool list -v -p "$pool" | \
+	    awk -v pool="$pool" -v dev="$vdev" '
+	    BEGIN { running = 0 }
+	    $1 == pool { next }
+	    $2 !~ /^[0-9]+$/ { next }
+	    {
+		    if ($1 == dev) {
+			    print running
+			    found = 1
+			    exit
+		    }
+		    running += $2
+	    }
+	    END { if (!found) exit 1 }'
+}
+
+#
+# Verify source-vdev participation using linearized physical offsets.
+# mode=lt requires at least one extent with start < limit.
+# mode=ge requires no extents with start < limit (all >= limit).
+# mode=ge_any requires at least one extent with start >= limit.
+# mode=ge_none requires no extents with start >= limit.
+#
+function fiemap_verify_linearized_range # mode limit [file]
+{
+	typeset mode=$1
+	typeset limit=$2
+	typeset fname=${3:-$FIEMAP_FILE}
+	typeset output
+	typeset total=0
+	typeset below=0
+
+	output=$(fiemap -v -s "$fname")
+	if [[ $? -ne 0 ]]; then
+		echo "$output"
+		return 1
+	fi
+
+	echo "$output"
+
+	while read -r id _ _ phys_range _; do
+		typeset phys_start
+		typeset start
+
+		case "$id" in
+		''|*[!0-9]*)
+			continue
+			;;
+		esac
+
+		phys_start=${phys_range%%-*}
+		phys_start=${phys_start#0x}
+		start=$((16#$phys_start))
+
+		total=$((total + 1))
+		if [[ $start -lt $limit ]]; then
+			below=$((below + 1))
+		fi
+	done <<-EOF
+	$output
+	EOF
+
+	if [[ $total -eq 0 ]]; then
+		return 1
+	fi
+
+	case "$mode" in
+	lt)
+		[[ $below -gt 0 ]] || return 1
+		;;
+	ge)
+		[[ $below -eq 0 ]] || return 1
+		;;
+	ge_any)
+		[[ $below -lt $total ]] || return 1
+		;;
+	ge_none)
+		[[ $below -eq $total ]] || return 1
+		;;
+	*)
+		return 1
+		;;
+	esac
+
+	return 0
+}

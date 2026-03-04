@@ -54,6 +54,7 @@
 #include <sys/dmu_objset.h>
 #include <sys/dmu_traverse.h>
 #include <sys/spa.h>
+#include <sys/spa_impl.h>
 #include <sys/txg.h>
 #include <sys/brt.h>
 #include <sys/vdev_impl.h>
@@ -4460,6 +4461,56 @@ zfs_fiemap_free_remap_segments(avl_tree_t *segments)
 	avl_destroy(segments);
 }
 
+/*
+ * Build a linearized top-level vdev address space for this FIEMAP call.
+ * The base for each vdev is the cumulative allocatable size of prior
+ * top-level vdevs.
+ */
+static void
+zfs_fiemap_compute_vdev_bases(spa_t *spa, zfs_fiemap_t *fm)
+{
+	vdev_t *rvd = spa->spa_root_vdev;
+	uint64_t running = 0;
+
+	ASSERT(fm->fm_vdev_bases == NULL);
+	fm->fm_vdev_bases_count = 0;
+
+	if (rvd == NULL || rvd->vdev_children == 0)
+		return;
+
+	fm->fm_vdev_bases_count = rvd->vdev_children;
+	fm->fm_vdev_bases = kmem_zalloc(sizeof (uint64_t) *
+	    fm->fm_vdev_bases_count, KM_SLEEP);
+
+	for (uint64_t i = 0; i < rvd->vdev_children; i++) {
+		vdev_t *vd = rvd->vdev_child[i];
+		uint64_t vdev;
+
+		if (vd == NULL)
+			continue;
+
+		vdev = vd->vdev_id;
+		ASSERT3U(vdev, <, fm->fm_vdev_bases_count);
+		if (vdev >= fm->fm_vdev_bases_count)
+			continue;
+
+		fm->fm_vdev_bases[vdev] = running;
+		ASSERT3U(UINT64_MAX - running, >=, vd->vdev_asize);
+		running += vd->vdev_asize;
+	}
+}
+
+static uint64_t
+zfs_fiemap_linearize_physical(zfs_fiemap_t *fm, uint64_t vdev, uint64_t offset)
+{
+	ASSERT3U(vdev, <, fm->fm_vdev_bases_count);
+	if (vdev >= fm->fm_vdev_bases_count)
+		return (offset);
+
+	ASSERT3U(UINT64_MAX - fm->fm_vdev_bases[vdev], >=, offset);
+	return (fm->fm_vdev_bases[vdev] + offset);
+}
+
 static void
 zfs_fiemap_insert_extent(zfs_fiemap_t *fm, int idx, zfs_fiemap_entry_t *fe,
     boolean_t is_hole, boolean_t is_embedded)
@@ -4576,10 +4627,12 @@ zfs_fiemap_cb(spa_t *spa, zilog_t *zilog, const blkptr_t *bp,
 			 */
 			if (!BP_IS_HOLE(&fm->fm_dn_blkptr) &&
 			    DVA_IS_VALID(&fm->fm_dn_blkptr.blk_dva[0])) {
-				fe->fe_physical_start = DVA_GET_OFFSET(
-				    &fm->fm_dn_blkptr.blk_dva[0]);
 				fe->fe_vdev = DVA_GET_VDEV(
 				    &fm->fm_dn_blkptr.blk_dva[0]);
+				fe->fe_physical_start =
+				    zfs_fiemap_linearize_physical(fm,
+				    fe->fe_vdev, DVA_GET_OFFSET(
+				    &fm->fm_dn_blkptr.blk_dva[0]));
 			} else {
 				fe->fe_physical_start = 0;
 			}
@@ -4739,8 +4792,11 @@ zfs_fiemap_cb(spa_t *spa, zilog_t *zilog, const blkptr_t *bp,
 							sfe->fe_logical_len =
 							    seg_logical_len;
 							sfe->fe_physical_start =
+							    zfs_fiemap_linearize_physical(
+							    fm,
+							    segment->frs_vdev,
 							    segment->
-							    frs_physical_start;
+							    frs_physical_start);
 							sfe->fe_physical_len =
 							    segment->
 							    frs_physical_len;
@@ -4772,7 +4828,9 @@ zfs_fiemap_cb(spa_t *spa, zilog_t *zilog, const blkptr_t *bp,
 					fe->fe_vdev =
 					    DVA_GET_VDEV(&bp->blk_dva[i]);
 					fe->fe_physical_start =
-					    DVA_GET_OFFSET(&bp->blk_dva[i]);
+					    zfs_fiemap_linearize_physical(fm,
+					    fe->fe_vdev,
+					    DVA_GET_OFFSET(&bp->blk_dva[i]));
 				}
 			}
 
@@ -5093,6 +5151,9 @@ zfs_fiemap_assemble(struct inode *ip, zfs_fiemap_t *fm)
 	}
 
 	spa = dmu_objset_spa(dn->dn_objset);
+	spa_config_enter(spa, SCL_VDEV, FTAG, RW_READER);
+	zfs_fiemap_compute_vdev_bases(spa, fm);
+	spa_config_exit(spa, SCL_VDEV, FTAG);
 
 	if ((fm->fm_flags & FIEMAP_FLAG_SYNC) && dnode_is_dirty(dn))
 		txg_wait_synced(spa_get_dsl(spa), 0);
@@ -5298,11 +5359,7 @@ zfs_fiemap_assemble(struct inode *ip, zfs_fiemap_t *fm)
 }
 
 /*
- * Fill the fiemap_extent_info structure with an extent.  It has been
- * requested that the following fields be reserved in future kernels.
- *
- * - fe_physical_len - reserved for physical length
- * - fe_device - reserved for device identifier
+ * Fill the fiemap_extent_info structure with an extent.
  *
  * Returns:
  *   ESRCH  - FIEMAP_EXTENT_LAST entry added
@@ -5312,8 +5369,7 @@ zfs_fiemap_assemble(struct inode *ip, zfs_fiemap_t *fm)
 static int
 zfs_fiemap_fill_next_extent(zfs_fiemap_t *fm, struct fiemap_extent_info *fei,
     uint64_t logical_start, uint64_t physical_start,
-    uint64_t logical_len, uint64_t physical_len,
-    uint32_t device, uint32_t flags)
+    uint64_t logical_len, uint32_t flags)
 {
 	boolean_t is_last = !!(flags & FIEMAP_EXTENT_LAST);
 	int error;
@@ -5343,9 +5399,7 @@ zfs_fiemap_fill_next_extent(zfs_fiemap_t *fm, struct fiemap_extent_info *fei,
 	extent.fe_logical = logical_start;
 	extent.fe_physical = physical_start;
 	extent.fe_length = logical_len;
-	extent.fe_physical_length_reserved = physical_len;
 	extent.fe_flags = export_flags;
-	extent.fe_device_reserved = device;
 
 	error = copy_to_user(fei->fi_extents_start + fei->fi_extents_mapped,
 	    &extent, sizeof (extent));
@@ -5401,8 +5455,7 @@ zfs_fiemap_tree_fill(zfs_fiemap_t *fm, int idx, struct fiemap_extent_info *fei,
 
 		error = zfs_fiemap_fill_next_extent(fm, fei,
 		    fe->fe_logical_start, fe->fe_physical_start,
-		    fe->fe_logical_len, fe->fe_physical_len,
-		    fe->fe_vdev, fe->fe_flags);
+		    fe->fe_logical_len, fe->fe_flags);
 		if (error)
 			return (error);
 
@@ -5517,6 +5570,10 @@ zfs_fiemap_destroy(zfs_fiemap_t *fm)
 
 	zfs_range_tree_vacate(fm->fm_free_tree, NULL, NULL);
 	zfs_range_tree_destroy(fm->fm_free_tree);
+	if (fm->fm_vdev_bases != NULL) {
+		kmem_free(fm->fm_vdev_bases,
+		    sizeof (uint64_t) * fm->fm_vdev_bases_count);
+	}
 
 	kmem_free(fm, sizeof (zfs_fiemap_t));
 }

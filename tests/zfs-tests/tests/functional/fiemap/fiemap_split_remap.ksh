@@ -25,7 +25,7 @@
 
 #
 # DESCRIPTION:
-#	Verify FIEMAP reports concrete vdev extents for split indirect remaps.
+#	Verify FIEMAP reports concrete extents for split indirect remaps.
 #	Use ZFS_DEBUG_INDIRECT_REMAP to force remap callbacks through split
 #	segments deterministically.
 #
@@ -39,6 +39,8 @@ typeset -r ZFS_DEBUG_INDIRECT_REMAP=$((1 << 10))
 typeset old_flags
 
 typeset old_compression
+typeset source_base
+typeset source_disk
 
 function cleanup
 {
@@ -72,15 +74,23 @@ new_flags=$(printf "0x%08x" \
     $(((old_flags | ZFS_DEBUG_INDIRECT_REMAP) & 0xffffffff)))
 log_must eval "echo $new_flags > $ZFS_FLAGS_PATH"
 
+source_disk=$(fiemap_get_last_vdev "$TESTPOOL")
+log_must test -n "$source_disk"
+
+source_base=$(fiemap_get_vdev_base "$TESTPOOL" "$source_disk")
+log_must test -n "$source_base"
+
 # Place data on the soon-to-be-removed top-level vdev.
 fiemap_write $BS 512
-fiemap_verify -s -V "0:>0"
+fiemap_verify -s -P
+log_must fiemap_verify_linearized_range ge_any "$source_base"
 
-log_must zpool remove $TESTPOOL $DISK
+log_must zpool remove $TESTPOOL $source_disk
 wait_for_removal $TESTPOOL
 
-# Split remap blocks must no longer report the removed indirect vdev.
-fiemap_verify -s -V "0:=0"
+# Split remap blocks must no longer map in the removed vdev range.
+fiemap_verify -s -P
+log_must fiemap_verify_linearized_range ge_none "$source_base"
 
 fiemap_remove
 

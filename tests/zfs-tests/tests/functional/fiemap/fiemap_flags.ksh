@@ -146,11 +146,21 @@ log_must zfs set dedup=off $TESTPOOL/$TESTFS
 # it is removed but afterwards the remapped versions are reported.
 # Write enough blocks to ensure the allocator distributes across all vdevs.
 log_note "Verify indirect blocks"
+typeset source_base
+typeset source_disk
+
+source_disk=$(fiemap_get_last_vdev "$TESTPOOL")
+log_must test -n "$source_disk"
+
+source_base=$(fiemap_get_vdev_base "$TESTPOOL" "$source_disk")
+log_must test -n "$source_base"
 fiemap_write $BS 512
-fiemap_verify -s -V "0:>0"
-log_must zpool remove $TESTPOOL $DISK
+fiemap_verify -s -P
+log_must fiemap_verify_linearized_range ge_any "$source_base"
+log_must zpool remove $TESTPOOL $source_disk
 wait_for_removal $TESTPOOL
-fiemap_verify -s -V "0:=0"
+fiemap_verify -s -P
+log_must fiemap_verify_linearized_range ge_none "$source_base"
 fiemap_remove
 
 log_pass "FIEMAP reports all known flags"
