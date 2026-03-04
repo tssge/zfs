@@ -3772,13 +3772,13 @@ dmu_recv_stream(dmu_recv_cookie_t *drc, offset_t *voffp)
 	    offsetof(struct receive_record_arg, node.bqn_node));
 
 	/*
-	 * Resolve destination checksum algorithm once (after rwa->os is set).
-	 * Pass NULL for dnode to get the dataset default.
+	 * Resolve the destination dataset checksum once
+	 * (after rwa->os is set).  This must use os_checksum,
+	 * which already reflects local/inherited receive-time
+	 * properties.
 	 */
 	if (rwa->bclone_dedup) {
-		zio_prop_t zp_dst;
-		dmu_write_policy(drc->drc_os, NULL, 0, 0, &zp_dst);
-		rwa->bclone_dst_cksum = zp_dst.zp_checksum;
+		rwa->bclone_dst_cksum = rwa->os->os_checksum;
 		/*
 		 * Enforce the same checksum requirement for both existing and
 		 * new destination datasets.  Existing datasets are checked in
