@@ -300,6 +300,18 @@ in addition to the destination's existing blocks.
 .Ar dataset
 must be in the same pool as the destination and use a cryptographic checksum.
 This allows deduplication against blocks in a different dataset.
+If
+.Ar dataset
+can not be indexed
+.Pq for example, it does not exist, is in a different pool, uses a non-cryptographic checksum, or indexing fails ,
+the receive operation continues without indexing
+.Ar dataset .
+Without
+.Fl v ,
+a warning is printed to standard error.
+With
+.Fl v ,
+the source indexing status is reported in verbose output.
 .It Fl F
 Force a rollback of the file system to the most recent snapshot before
 performing the receive operation.
