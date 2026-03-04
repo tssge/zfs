@@ -50,7 +50,7 @@ typedef struct bclone_dedup_index {
 	/* stats */
 	uint64_t	bdi_hits;
 	uint64_t	bdi_misses;
-	uint64_t	bdi_deferred_misses;	/* deferred entry, txg not synced */
+	uint64_t	bdi_deferred_misses;	/* deferred entry */
 	uint64_t	bdi_cloned_bytes;
 } bclone_dedup_index_t;
 

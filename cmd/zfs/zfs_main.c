@@ -5149,17 +5149,18 @@ zfs_do_receive(int argc, char **argv)
 
 	enum { OPT_BCLONE_SOURCE = 256 };
 	struct option long_options[] = {
-		{"bclone-dedup",  no_argument, NULL, 'B'},
-		{"bclone-source", required_argument, NULL, OPT_BCLONE_SOURCE},
-		{"force",         no_argument, NULL, 'F'},
-		{"verbose",       no_argument, NULL, 'v'},
-		{"force-unmount", no_argument, NULL, 'M'},
-		{"dryrun",        no_argument, NULL, 'n'},
-		{"resumable",     no_argument, NULL, 's'},
-		{"skip-holds",    no_argument, NULL, 'h'},
-		{"nomount",       no_argument, NULL, 'u'},
-		{"heal",          no_argument, NULL, 'c'},
-		{"abort",         no_argument, NULL, 'A'},
+		{"bclone-dedup",	no_argument, NULL, 'B'},
+		{"bclone-source",	required_argument, NULL,
+		    OPT_BCLONE_SOURCE},
+		{"force",		no_argument, NULL, 'F'},
+		{"verbose",		no_argument, NULL, 'v'},
+		{"force-unmount",	no_argument, NULL, 'M'},
+		{"dryrun",		no_argument, NULL, 'n'},
+		{"resumable",		no_argument, NULL, 's'},
+		{"skip-holds",		no_argument, NULL, 'h'},
+		{"nomount",		no_argument, NULL, 'u'},
+		{"heal",		no_argument, NULL, 'c'},
+		{"abort",		no_argument, NULL, 'A'},
 		{0, 0, 0, 0}
 	};
 
