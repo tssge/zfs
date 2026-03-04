@@ -146,10 +146,26 @@ struct receive_writer_arg {
 
 	/* Block clone dedup state */
 	boolean_t bclone_dedup;
-	enum zio_checksum bclone_dst_cksum;  /* resolved dest checksum algo */
-	bclone_dedup_index_t *bdi;           /* NULL when disabled */
-	boolean_t bdi_synced_once;           /* txg synced for deferred BPs */
+	enum zio_checksum bclone_dst_cksum;	/* destination checksum */
+	bclone_dedup_index_t *bdi;		/* NULL when disabled */
+	boolean_t bdi_synced_once;		/* deferred BPs synced */
 };
+
+static boolean_t
+bclone_cksum_ok(enum zio_checksum cksum)
+{
+	return (cksum == ZIO_CHECKSUM_SHA256 ||
+	    cksum == ZIO_CHECKSUM_SKEIN ||
+	    cksum == ZIO_CHECKSUM_EDONR ||
+	    cksum == ZIO_CHECKSUM_BLAKE3);
+}
+
+static void
+bclone_reset_recv_index(struct receive_writer_arg *rwa)
+{
+	bdi_destroy(rwa->bdi);
+	rwa->bdi = bdi_create(zfs_recv_bclone_dedup_max_bytes);
+}
 
 typedef struct dmu_recv_begin_arg {
 	const char *drba_origin;
@@ -717,10 +733,7 @@ dmu_recv_begin_check(void *arg, dmu_tx_t *tx)
 				 * algorithm check handles mismatches anyway.
 				 */
 				enum zio_checksum cksum = os->os_checksum;
-				if (cksum != ZIO_CHECKSUM_SHA256 &&
-				    cksum != ZIO_CHECKSUM_SKEIN &&
-				    cksum != ZIO_CHECKSUM_EDONR &&
-				    cksum != ZIO_CHECKSUM_BLAKE3) {
+				if (!bclone_cksum_ok(cksum)) {
 					dsl_dataset_rele_flags(ds, dsflags,
 					    FTAG);
 					return (SET_ERROR(ENOTSUP));
@@ -3696,17 +3709,18 @@ dmu_recv_stream(dmu_recv_cookie_t *drc, offset_t *voffp)
 					} else {
 						enum zio_checksum ck =
 						    src_os->os_checksum;
-						src_ok =
-						    (ck == ZIO_CHECKSUM_SHA256 ||
-						    ck == ZIO_CHECKSUM_SKEIN ||
-						    ck == ZIO_CHECKSUM_EDONR ||
-						    ck == ZIO_CHECKSUM_BLAKE3);
+						src_ok = bclone_cksum_ok(ck);
 					}
 					if (src_ok) {
-						(void)
+						int bdi_err;
+						bdi_err =
 						    bdi_populate_from_dataset(
 						    rwa->bdi,
 						    dmu_objset_ds(src_os));
+						if (bdi_err != 0) {
+							bclone_reset_recv_index(
+							    rwa);
+						}
 					}
 					dmu_objset_rele(src_os, FTAG);
 				}
@@ -3765,6 +3779,17 @@ dmu_recv_stream(dmu_recv_cookie_t *drc, offset_t *voffp)
 		zio_prop_t zp_dst;
 		dmu_write_policy(drc->drc_os, NULL, 0, 0, &zp_dst);
 		rwa->bclone_dst_cksum = zp_dst.zp_checksum;
+		/*
+		 * Enforce the same checksum requirement for both existing and
+		 * new destination datasets.  Existing datasets are checked in
+		 * dmu_recv_begin_check(); this catches newfs receives where the
+		 * effective checksum is inherited or set by -o checksum=...
+		 */
+		if (!rwa->os->os_encrypted &&
+		    !bclone_cksum_ok(rwa->bclone_dst_cksum)) {
+			err = SET_ERROR(ENOTSUP);
+			goto out;
+		}
 	}
 
 	(void) thread_create(NULL, 0, receive_writer_thread, rwa, 0, curproc,

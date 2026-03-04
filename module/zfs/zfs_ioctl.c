@@ -5294,6 +5294,53 @@ zfs_allow_log_destroy(void *arg)
 static boolean_t zfs_ioc_recv_inject_err;
 #endif
 
+#define	BCLONE_SRC_DIFFERENT_POOL	"different_pool"
+#define	BCLONE_SRC_NON_CRYPTO		"non_crypto_checksum"
+#define	BCLONE_SRC_INDEXED		"indexed"
+#define	BCLONE_SRC_INDEX_ERROR		"index_error"
+#define	BCLONE_SRC_NOT_FOUND		"not_found"
+
+static boolean_t
+bclone_cksum_ok(enum zio_checksum cksum)
+{
+	return (cksum == ZIO_CHECKSUM_SHA256 ||
+	    cksum == ZIO_CHECKSUM_SKEIN ||
+	    cksum == ZIO_CHECKSUM_EDONR ||
+	    cksum == ZIO_CHECKSUM_BLAKE3);
+}
+
+static void
+bclone_reset_index(bclone_dedup_index_t **bdip)
+{
+	bdi_destroy(*bdip);
+	*bdip = bdi_create(zfs_recv_bclone_dedup_max_bytes);
+}
+
+static const char *
+bclone_index_source(bclone_dedup_index_t **bdip, objset_t *src_os)
+{
+	int bdi_err;
+
+	bdi_err = bdi_populate_from_dataset(*bdip, dmu_objset_ds(src_os));
+	if (bdi_err == 0)
+		return (BCLONE_SRC_INDEXED);
+
+	bclone_reset_index(bdip);
+	return (BCLONE_SRC_INDEX_ERROR);
+}
+
+static const char *
+bclone_src_status(bclone_dedup_index_t **bdip, objset_t *src_os)
+{
+	if (!src_os->os_encrypted) {
+		enum zio_checksum cksum = src_os->os_checksum;
+		if (!bclone_cksum_ok(cksum))
+			return (BCLONE_SRC_NON_CRYPTO);
+	}
+
+	return (bclone_index_source(bdip, src_os));
+}
+
 /*
  * nvlist 'errors' is always allocated. It will contain descriptions of
  * encountered errors, if any. It's the callers responsibility to free.
@@ -5372,45 +5419,26 @@ zfs_ioc_recv_impl(char *tofs, char *tosnap, const char *origin,
 				char dst_pool[ZFS_MAX_DATASET_NAME_LEN];
 				(void) strlcpy(dst_pool, tofs,
 				    sizeof (dst_pool));
-				char *slash = strchr(dst_pool, '/');
-				if (slash != NULL)
-					*slash = '\0';
-				boolean_t same_pool =
-				    (strcmp(src_pool, dst_pool) == 0);
+					char *slash = strchr(dst_pool, '/');
+					if (slash != NULL)
+						*slash = '\0';
+					boolean_t same_pool =
+					    (strcmp(src_pool, dst_pool) == 0);
 
-				if (!same_pool) {
-					bclone_source_status =
-					    "different_pool";
-					dmu_objset_rele(src_os, FTAG);
-				} else if (!src_os->os_encrypted) {
-					enum zio_checksum cksum =
-					    src_os->os_checksum;
-					if (cksum != ZIO_CHECKSUM_SHA256 &&
-					    cksum != ZIO_CHECKSUM_SKEIN &&
-					    cksum != ZIO_CHECKSUM_EDONR &&
-					    cksum != ZIO_CHECKSUM_BLAKE3) {
+					if (!same_pool) {
 						bclone_source_status =
-						    "non_crypto_checksum";
-						dmu_objset_rele(src_os, FTAG);
+						    BCLONE_SRC_DIFFERENT_POOL;
 					} else {
-						(void) bdi_populate_from_dataset(
-						    bdi,
-						    dmu_objset_ds(src_os));
 						bclone_source_status =
-						    "indexed";
-						dmu_objset_rele(src_os, FTAG);
+						    bclone_src_status(
+						    &bdi, src_os);
 					}
-				} else {
-					/* Encrypted — skip checksum check */
-					(void) bdi_populate_from_dataset(bdi,
-					    dmu_objset_ds(src_os));
-					bclone_source_status = "indexed";
 					dmu_objset_rele(src_os, FTAG);
+				} else {
+					bclone_source_status =
+					    BCLONE_SRC_NOT_FOUND;
 				}
-			} else {
-				bclone_source_status = "not_found";
 			}
-		}
 
 		/* Destination dataset: index from existing blocks */
 		objset_t *bdi_os;
