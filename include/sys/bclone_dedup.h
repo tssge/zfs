@@ -54,6 +54,44 @@ typedef struct bclone_dedup_index {
 	uint64_t	bdi_cloned_bytes;
 } bclone_dedup_index_t;
 
+typedef enum bclone_source_status {
+	BCS_NONE = 0,
+	BCS_DIFF_POOL,
+	BCS_NON_CRYPTO,
+	BCS_INDEXED,
+	BCS_INDEX_ERR,
+	BCS_NOT_FOUND
+} bclone_source_status_t;
+
+static inline boolean_t
+bclone_cksum_ok(enum zio_checksum cksum)
+{
+	return (cksum == ZIO_CHECKSUM_SHA256 ||
+	    cksum == ZIO_CHECKSUM_SKEIN ||
+	    cksum == ZIO_CHECKSUM_EDONR ||
+	    cksum == ZIO_CHECKSUM_BLAKE3);
+}
+
+static inline const char *
+bclone_source_status_string(bclone_source_status_t status)
+{
+	switch (status) {
+	case BCS_DIFF_POOL:
+		return ("different_pool");
+	case BCS_NON_CRYPTO:
+		return ("non_crypto_checksum");
+	case BCS_INDEXED:
+		return ("indexed");
+	case BCS_INDEX_ERR:
+		return ("index_error");
+	case BCS_NOT_FOUND:
+		return ("not_found");
+	case BCS_NONE:
+	default:
+		return (NULL);
+	}
+}
+
 bclone_dedup_index_t *bdi_create(uint64_t mem_max);
 void bdi_destroy(bclone_dedup_index_t *bdi);
 int bdi_populate_from_dataset(bclone_dedup_index_t *bdi,

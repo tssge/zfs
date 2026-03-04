@@ -151,15 +151,6 @@ struct receive_writer_arg {
 	boolean_t bdi_synced_once;		/* deferred BPs synced */
 };
 
-static boolean_t
-bclone_cksum_ok(enum zio_checksum cksum)
-{
-	return (cksum == ZIO_CHECKSUM_SHA256 ||
-	    cksum == ZIO_CHECKSUM_SKEIN ||
-	    cksum == ZIO_CHECKSUM_EDONR ||
-	    cksum == ZIO_CHECKSUM_BLAKE3);
-}
-
 static void
 bclone_reset_recv_index(struct receive_writer_arg *rwa)
 {
@@ -3699,17 +3690,24 @@ dmu_recv_stream(dmu_recv_cookie_t *drc, offset_t *voffp)
 					    drc->drc_tofs,
 					    sizeof (dst_pool));
 					char *sl = strchr(dst_pool, '/');
+					bclone_source_status_t *src_status =
+					    &drc->drc_bclone_source_status;
 					if (sl != NULL)
 						*sl = '\0';
 					boolean_t src_ok = B_FALSE;
 					if (strcmp(src_pool, dst_pool) != 0) {
-						/* different pool — skip */
+						*src_status =
+						    BCS_DIFF_POOL;
 					} else if (src_os->os_encrypted) {
 						src_ok = B_TRUE;
 					} else {
 						enum zio_checksum ck =
 						    src_os->os_checksum;
 						src_ok = bclone_cksum_ok(ck);
+						if (!src_ok) {
+							*src_status =
+							    BCS_NON_CRYPTO;
+						}
 					}
 					if (src_ok) {
 						int bdi_err;
@@ -3720,11 +3718,18 @@ dmu_recv_stream(dmu_recv_cookie_t *drc, offset_t *voffp)
 						if (bdi_err != 0) {
 							bclone_reset_recv_index(
 							    rwa);
+							*src_status =
+							    BCS_INDEX_ERR;
+						} else {
+							*src_status =
+							    BCS_INDEXED;
 						}
 					}
 					dmu_objset_rele(src_os, FTAG);
+				} else if (src_err == ENOENT) {
+					drc->drc_bclone_source_status =
+					    BCS_NOT_FOUND;
 				}
-				/* ENOENT: source gone — skip gracefully */
 			}
 
 			/* Destination dataset */
@@ -3911,6 +3916,10 @@ out:
 	if (rwa->bdi != NULL) {
 		bdi_destroy(rwa->bdi);
 		rwa->bdi = NULL;
+	}
+	if (drc->drc_bdi != NULL) {
+		bdi_destroy(drc->drc_bdi);
+		drc->drc_bdi = NULL;
 	}
 
 	/*

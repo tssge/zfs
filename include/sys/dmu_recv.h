@@ -54,6 +54,7 @@ typedef struct dmu_recv_cookie {
 	boolean_t drc_resumable;
 	boolean_t drc_bclone_dedup;		/* -B flag active */
 	const char *drc_bclone_source;		/* source dataset (or NULL) */
+	bclone_source_status_t drc_bclone_source_status;
 	bclone_dedup_index_t *drc_bdi;		/* pre-built index (or NULL) */
 	boolean_t drc_should_save;
 	boolean_t drc_raw;

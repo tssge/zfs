@@ -5294,21 +5294,6 @@ zfs_allow_log_destroy(void *arg)
 static boolean_t zfs_ioc_recv_inject_err;
 #endif
 
-#define	BCLONE_SRC_DIFFERENT_POOL	"different_pool"
-#define	BCLONE_SRC_NON_CRYPTO		"non_crypto_checksum"
-#define	BCLONE_SRC_INDEXED		"indexed"
-#define	BCLONE_SRC_INDEX_ERROR		"index_error"
-#define	BCLONE_SRC_NOT_FOUND		"not_found"
-
-static boolean_t
-bclone_cksum_ok(enum zio_checksum cksum)
-{
-	return (cksum == ZIO_CHECKSUM_SHA256 ||
-	    cksum == ZIO_CHECKSUM_SKEIN ||
-	    cksum == ZIO_CHECKSUM_EDONR ||
-	    cksum == ZIO_CHECKSUM_BLAKE3);
-}
-
 static void
 bclone_reset_index(bclone_dedup_index_t **bdip)
 {
@@ -5316,26 +5301,26 @@ bclone_reset_index(bclone_dedup_index_t **bdip)
 	*bdip = bdi_create(zfs_recv_bclone_dedup_max_bytes);
 }
 
-static const char *
+static bclone_source_status_t
 bclone_index_source(bclone_dedup_index_t **bdip, objset_t *src_os)
 {
 	int bdi_err;
 
 	bdi_err = bdi_populate_from_dataset(*bdip, dmu_objset_ds(src_os));
 	if (bdi_err == 0)
-		return (BCLONE_SRC_INDEXED);
+		return (BCS_INDEXED);
 
 	bclone_reset_index(bdip);
-	return (BCLONE_SRC_INDEX_ERROR);
+	return (BCS_INDEX_ERR);
 }
 
-static const char *
+static bclone_source_status_t
 bclone_src_status(bclone_dedup_index_t **bdip, objset_t *src_os)
 {
 	if (!src_os->os_encrypted) {
 		enum zio_checksum cksum = src_os->os_checksum;
 		if (!bclone_cksum_ok(cksum))
-			return (BCLONE_SRC_NON_CRYPTO);
+			return (BCS_NON_CRYPTO);
 	}
 
 	return (bclone_index_source(bdip, src_os));
@@ -5354,7 +5339,7 @@ zfs_ioc_recv_impl(char *tofs, char *tosnap, const char *origin,
     uint64_t *errflags, nvlist_t **errors,
     uint64_t *out_bclone_hits, uint64_t *out_bclone_misses,
     uint64_t *out_bclone_bytes_cloned, uint64_t *out_bclone_index_entries,
-    const char **out_bclone_source_status)
+    bclone_source_status_t *out_bclone_source_status)
 {
 	dmu_recv_cookie_t drc;
 	int error = 0;
@@ -5394,7 +5379,7 @@ zfs_ioc_recv_impl(char *tofs, char *tosnap, const char *origin,
 	 * naturally when both datasets share blocks.
 	 */
 	bclone_dedup_index_t *bdi = NULL;
-	const char *bclone_source_status = NULL;
+	bclone_source_status_t bclone_source_status = BCS_NONE;
 	if (bclone_dedup) {
 		bdi = bdi_create(zfs_recv_bclone_dedup_max_bytes);
 
@@ -5419,24 +5404,24 @@ zfs_ioc_recv_impl(char *tofs, char *tosnap, const char *origin,
 				char dst_pool[ZFS_MAX_DATASET_NAME_LEN];
 				(void) strlcpy(dst_pool, tofs,
 				    sizeof (dst_pool));
-					char *slash = strchr(dst_pool, '/');
-					if (slash != NULL)
-						*slash = '\0';
-					boolean_t same_pool =
-					    (strcmp(src_pool, dst_pool) == 0);
+				char *slash = strchr(dst_pool, '/');
+				if (slash != NULL)
+					*slash = '\0';
+				boolean_t same_pool =
+				    (strcmp(src_pool, dst_pool) == 0);
 
-					if (!same_pool) {
-						bclone_source_status =
-						    BCLONE_SRC_DIFFERENT_POOL;
-					} else {
-						bclone_source_status =
-						    bclone_src_status(
-						    &bdi, src_os);
-					}
-					dmu_objset_rele(src_os, FTAG);
+				if (!same_pool) {
+					bclone_source_status =
+					    BCS_DIFF_POOL;
 				} else {
 					bclone_source_status =
-					    BCLONE_SRC_NOT_FOUND;
+					    bclone_src_status(&bdi,
+					    src_os);
+				}
+				dmu_objset_rele(src_os, FTAG);
+				} else {
+					bclone_source_status =
+					    BCS_NOT_FOUND;
 				}
 			}
 
@@ -5480,6 +5465,7 @@ zfs_ioc_recv_impl(char *tofs, char *tosnap, const char *origin,
 			bdi_destroy(bdi);
 		goto out;
 	}
+	drc.drc_bclone_source_status = bclone_source_status;
 	drc.drc_bdi = bdi;
 	tofs_was_redacted = dsl_get_redacted(drc.drc_ds);
 
@@ -5668,8 +5654,15 @@ zfs_ioc_recv_impl(char *tofs, char *tosnap, const char *origin,
 		*out_bclone_bytes_cloned = drc.drc_bclone_bytes_cloned;
 		*out_bclone_index_entries = drc.drc_bclone_index_entries;
 	}
-	if (out_bclone_source_status != NULL)
-		*out_bclone_source_status = bclone_source_status;
+	if (out_bclone_source_status != NULL) {
+		if (drc.drc_bclone_source_status !=
+		    BCS_NONE) {
+			*out_bclone_source_status =
+			    drc.drc_bclone_source_status;
+		} else {
+			*out_bclone_source_status = bclone_source_status;
+		}
+	}
 
 #ifdef	ZFS_DEBUG
 	if (zfs_ioc_recv_inject_err) {
@@ -5977,7 +5970,7 @@ zfs_ioc_recv_new(const char *fsname, nvlist_t *innvl, nvlist_t *outnvl)
 
 	uint64_t bclone_hits = 0, bclone_misses = 0;
 	uint64_t bclone_bytes_cloned = 0, bclone_index_entries = 0;
-	const char *bclone_source_status = NULL;
+	bclone_source_status_t bclone_source_status = BCS_NONE;
 
 	error = zfs_ioc_recv_impl(tofs, tosnap, origin, recvprops, localprops,
 	    hidden_args, force, heal, resumable, bclone_dedup, bclone_source,
@@ -5986,7 +5979,7 @@ zfs_ioc_recv_new(const char *fsname, nvlist_t *innvl, nvlist_t *outnvl)
 	    bclone_dedup ? &bclone_misses : NULL,
 	    bclone_dedup ? &bclone_bytes_cloned : NULL,
 	    bclone_dedup ? &bclone_index_entries : NULL,
-	    bclone_source != NULL ? &bclone_source_status : NULL);
+	    &bclone_source_status);
 
 	fnvlist_add_uint64(outnvl, "read_bytes", read_bytes);
 	fnvlist_add_uint64(outnvl, "error_flags", errflags);
@@ -5999,9 +5992,9 @@ zfs_ioc_recv_new(const char *fsname, nvlist_t *innvl, nvlist_t *outnvl)
 		fnvlist_add_uint64(outnvl, "bclone_index_entries",
 		    bclone_index_entries);
 	}
-	if (bclone_source_status != NULL) {
+	if (bclone_source_status != BCS_NONE) {
 		fnvlist_add_string(outnvl, "bclone_source_status",
-		    bclone_source_status);
+		    bclone_source_status_string(bclone_source_status));
 	}
 
 out:

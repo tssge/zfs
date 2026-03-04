@@ -5087,7 +5087,7 @@ zfs_receive_one(libzfs_handle_t *hdl, int infd, const char *tosnap,
 	}
 
 	nvlist_t *recv_info = NULL;
-	if (flags->heal || flags->bclone_dedup) {
+	if (flags->heal || flags->bclone_dedup || hastoken) {
 		err = ioctl_err = lzc_receive_with_info(destsnap, rcvprops,
 		    oxprops, wkeydata, wkeylen, origin, flags->force,
 		    flags->heal, flags->resumable, raw,
