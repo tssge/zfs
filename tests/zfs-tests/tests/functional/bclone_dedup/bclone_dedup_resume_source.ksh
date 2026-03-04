@@ -103,7 +103,18 @@ if [[ "$token" == "-" || -z "$token" ]]; then
 fi
 
 # Resume — source is gone, should degrade gracefully
-log_must eval "zfs send -t $token | zfs recv -sF -o checksum=sha256 $DSTFS"
+output=$(eval "zfs send -t $token | \
+    zfs recv -sF -o checksum=sha256 $DSTFS" 2>&1)
+rc=$?
+if [[ $rc -ne 0 ]]; then
+	log_fail "resume recv should succeed after source removal, rc=$rc"
+fi
+
+if echo "$output" | grep -q "not_found"; then
+	log_note "PASS: resume warning reports source status not_found"
+else
+	log_fail "Expected resume warning with 'not_found', got: $output"
+fi
 
 # Verify data integrity — recv must still succeed
 log_must diff $SRCDIR/data $DSTDIR/data

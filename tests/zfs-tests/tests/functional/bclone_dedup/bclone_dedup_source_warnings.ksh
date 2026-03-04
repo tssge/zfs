@@ -16,8 +16,13 @@ claim="recv -B --bclone-source reports skip reasons."
 
 log_assert $claim
 
+typeset otherpool=${TESTPOOL}x
+typeset othervdev=$TEST_BASE_DIR/bclone_dedup_source_warnings_otherpool.vdev
+
 function cleanup
 {
+	poolexists $otherpool && destroy_pool $otherpool
+	[[ -f $othervdev ]] && rm -f $othervdev
 	datasetexists $TESTPOOL && destroy_pool $TESTPOOL
 }
 
@@ -112,5 +117,35 @@ if echo "$output" | grep -q "Warning.*bclone-source"; then
 fi
 
 log_must diff $SRCDIR/data $DSTDIR/data
+
+#
+# Test 4: --bclone-source in a different pool
+#         Should warn "different_pool" and recv still succeeds.
+#
+log_must zfs destroy -r $DSTFS
+log_must truncate -s 512M $othervdev
+log_must zpool create -o feature@block_cloning=enabled $otherpool $othervdev
+log_must zfs create -o checksum=sha256 $otherpool/ref
+log_must cp $SRCDIR/data /$otherpool/ref/data
+log_must zfs snapshot $otherpool/ref@snap
+
+output=$(eval "zfs send -c $SRCFS@snap1 | \
+    zfs recv -B --bclone-source $otherpool/ref \
+    -o checksum=sha256 $DSTFS" 2>&1)
+rc=$?
+
+if [[ $rc -ne 0 ]]; then
+	log_fail "recv should succeed with cross-pool source, got rc=$rc"
+fi
+
+if echo "$output" | grep -q "different_pool"; then
+	log_note "PASS: different_pool warning received"
+else
+	log_fail "Expected 'different_pool' warning, got: $output"
+fi
+
+log_must diff $SRCDIR/data $DSTDIR/data
+log_must destroy_pool $otherpool
+log_must rm -f $othervdev
 
 log_pass $claim

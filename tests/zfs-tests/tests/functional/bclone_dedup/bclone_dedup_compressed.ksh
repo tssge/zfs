@@ -13,8 +13,17 @@ claim="recv -B works with compressed send streams."
 
 log_assert $claim
 
+typeset srcvol=$TESTPOOL/srcvol
+typeset dstvol=$TESTPOOL/dstvol
+typeset srcvoldev=$ZVOL_DEVDIR/$srcvol
+typeset dstvoldev=$ZVOL_DEVDIR/$dstvol
+typeset voldatain=$TEST_BASE_DIR/bclone_dedup_compressed_vol_input
+typeset voldataout=$TEST_BASE_DIR/bclone_dedup_compressed_vol_output
+
 function cleanup
 {
+	[[ -f $voldatain ]] && rm -f $voldatain
+	[[ -f $voldataout ]] && rm -f $voldataout
 	datasetexists $TESTPOOL && destroy_pool $TESTPOOL
 }
 
@@ -50,5 +59,27 @@ log_note "bclone_dedup stats: $stats"
 if [[ "$hits" -eq 0 ]]; then
 	log_fail "Expected dedup hits > 0 with compressed send, got $hits"
 fi
+
+#
+# zvol coverage: recv -B with compressed streams should also work
+# for volume datasets.
+#
+log_must dd if=/dev/urandom of=$voldatain bs=1M count=16
+log_must zfs create -V 64M -o checksum=sha256 -o compression=lz4 $srcvol
+block_device_wait $srcvoldev
+log_must dd if=$voldatain of=$srcvoldev bs=1M count=16
+log_must zfs snapshot $srcvol@snap1
+
+log_must eval "zfs send -c $srcvol@snap1 | \
+    zfs recv -o checksum=sha256 $dstvol"
+
+clear_bclone_dedup_stats
+log_must zfs destroy -r $dstvol@snap1
+log_must eval "zfs send -c $srcvol@snap1 | \
+    zfs recv -BF -o checksum=sha256 $dstvol"
+
+block_device_wait $dstvoldev
+log_must dd if=$dstvoldev of=$voldataout bs=1M count=16
+log_must cmp $voldatain $voldataout
 
 log_pass $claim
