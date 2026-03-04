@@ -74,7 +74,6 @@ bdi_create(uint64_t mem_max)
 	bdi = kmem_zalloc(sizeof (*bdi), KM_SLEEP);
 	avl_create(&bdi->bdi_tree, bdi_entry_compare, sizeof (bdi_entry_t),
 	    offsetof(bdi_entry_t, bdie_avl_link));
-	mutex_init(&bdi->bdi_lock, NULL, MUTEX_DEFAULT, NULL);
 	bdi->bdi_mem_max = mem_max;
 
 	return (bdi);
@@ -90,7 +89,6 @@ bdi_destroy(bclone_dedup_index_t *bdi)
 		kmem_free(entry, sizeof (*entry));
 
 	avl_destroy(&bdi->bdi_tree);
-	mutex_destroy(&bdi->bdi_lock);
 	kmem_free(bdi, sizeof (*bdi));
 }
 
@@ -102,22 +100,22 @@ static int
 bdi_traverse_cb(spa_t *spa, zilog_t *zilog, const blkptr_t *bp,
     const zbookmark_phys_t *zb, const dnode_phys_t *dnp, void *arg)
 {
-	(void) spa, (void) zilog, (void) zb, (void) dnp;
+	(void) spa, (void) zilog, (void) dnp;
 	bclone_dedup_index_t *bdi = arg;
 
 	if (bp == NULL || BP_IS_HOLE(bp) || BP_IS_EMBEDDED(bp))
 		return (0);
 
+	/* Skip indirect blocks — only leaf (level-0) data blocks matter */
+	if (zb->zb_level > 0)
+		return (0);
+
 	if (BP_IS_GANG(bp))
 		return (0);
 
-	/* Respect memory cap */
-	if (bdi->bdi_mem_used + sizeof (bdi_entry_t) > bdi->bdi_mem_max) {
-		zfs_dbgmsg("bclone_dedup: memory cap reached at %llu entries "
-		    "(%llu bytes)", (u_longlong_t)bdi->bdi_count,
-		    (u_longlong_t)bdi->bdi_mem_used);
-		return (0);
-	}
+	/* Respect memory cap — abort traversal to avoid dbgmsg spam */
+	if (bdi->bdi_mem_used + sizeof (bdi_entry_t) > bdi->bdi_mem_max)
+		return (SET_ERROR(ENOSPC));
 
 	bdi_entry_t *entry = kmem_alloc(sizeof (*entry), KM_SLEEP);
 	entry->bdie_cksum = bp->blk_cksum;
@@ -153,6 +151,15 @@ bdi_populate_from_dataset(bclone_dedup_index_t *bdi, dsl_dataset_t *ds)
 	    TRAVERSE_PRE | TRAVERSE_PREFETCH_METADATA | TRAVERSE_NO_DECRYPT,
 	    bdi_traverse_cb, bdi);
 
+	if (err == ENOSPC) {
+		zfs_dbgmsg("bclone_dedup: memory cap reached at %llu entries "
+		    "(%llu bytes) from dataset %llu",
+		    (u_longlong_t)bdi->bdi_count,
+		    (u_longlong_t)bdi->bdi_mem_used,
+		    (u_longlong_t)ds->ds_object);
+		err = 0;
+	}
+
 	if (err == 0) {
 		zfs_dbgmsg("bclone_dedup: indexed %llu entries (%llu bytes) "
 		    "from dataset %llu",
@@ -162,30 +169,6 @@ bdi_populate_from_dataset(bclone_dedup_index_t *bdi, dsl_dataset_t *ds)
 	}
 
 	return (err);
-}
-
-/*
- * Look up a block in the index by checksum, algorithm, compression, and
- * geometry.  Returns the matching blkptr_t or NULL on miss.
- * Only returns entries with a resolved BP (non-deferred).
- */
-const blkptr_t *
-bdi_lookup(bclone_dedup_index_t *bdi, const zio_cksum_t *cksum,
-    uint8_t cksum_type, uint8_t compress, uint32_t lsize, uint32_t psize)
-{
-	bdi_entry_t search = {
-		.bdie_cksum = *cksum,
-		.bdie_cksum_type = cksum_type,
-		.bdie_compress = compress,
-		.bdie_lsize = lsize,
-		.bdie_psize = psize,
-	};
-
-	bdi_entry_t *found = avl_find(&bdi->bdi_tree, &search, NULL);
-	if (found != NULL && !found->bdie_deferred)
-		return (&found->bdie_bp);
-
-	return (NULL);
 }
 
 /*

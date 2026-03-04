@@ -44,7 +44,6 @@ typedef struct bdi_entry {
 
 typedef struct bclone_dedup_index {
 	avl_tree_t	bdi_tree;
-	kmutex_t	bdi_lock;		/* protects tree mutations */
 	uint64_t	bdi_count;		/* number of entries */
 	uint64_t	bdi_mem_used;		/* current memory usage */
 	uint64_t	bdi_mem_max;		/* cap from tunable */
@@ -59,9 +58,6 @@ bclone_dedup_index_t *bdi_create(uint64_t mem_max);
 void bdi_destroy(bclone_dedup_index_t *bdi);
 int bdi_populate_from_dataset(bclone_dedup_index_t *bdi,
     struct dsl_dataset *ds);
-const blkptr_t *bdi_lookup(bclone_dedup_index_t *bdi,
-    const zio_cksum_t *cksum, uint8_t cksum_type,
-    uint8_t compress, uint32_t lsize, uint32_t psize);
 bdi_entry_t *bdi_lookup_entry(bclone_dedup_index_t *bdi,
     const zio_cksum_t *cksum, uint8_t cksum_type,
     uint8_t compress, uint32_t lsize, uint32_t psize);

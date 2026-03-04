@@ -2445,7 +2445,7 @@ flush_write_batch_impl(struct receive_writer_arg *rwa)
 						    err == EIO) {
 							err = 0;
 						}
-					} else if (!can_clone) {
+					} else {
 						rwa->bdi->bdi_misses++;
 					}
 				} else {

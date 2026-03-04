@@ -1183,9 +1183,11 @@ recv_impl(const char *snapname, nvlist_t *recvdprops, nvlist_t *localprops,
 					has = B_TRUE;
 				}
 				if (nvlist_lookup_uint64(outnvl,
-				    "bclone_misses", &val) == 0)
+				    "bclone_misses", &val) == 0) {
 					fnvlist_add_uint64(info,
 					    "bclone_misses", val);
+					has = B_TRUE;
+				}
 				if (nvlist_lookup_uint64(outnvl,
 				    "bclone_bytes_cloned", &val) == 0)
 					fnvlist_add_uint64(info,
