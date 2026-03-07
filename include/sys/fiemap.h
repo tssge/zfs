@@ -32,8 +32,6 @@
  * The following flags have been submitted for inclusion in future
  * Linux kernels and the filefrag(8) utility.
  */
-#define	fe_device_reserved		fe_reserved[0]
-#define	fe_physical_length_reserved	fe_reserved64[0]
 
 /*
  * Request that all copies of an extent be reported.  They will be reported
@@ -92,6 +90,12 @@
 typedef struct zfs_fiemap_entry {
 	uint64_t fe_logical_start;
 	uint64_t fe_logical_len;
+	/*
+	 * Userspace only receives one exported physical scalar.  ZFS keeps
+	 * the richer internal tuple here so we can linearize the public
+	 * physical coordinate, merge adjacent extents, and preserve on-disk
+	 * compressed lengths while assembling the FIEMAP response.
+	 */
 	uint64_t fe_physical_start;
 	uint64_t fe_physical_len;
 	uint64_t fe_vdev;

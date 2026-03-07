@@ -4462,9 +4462,10 @@ zfs_fiemap_free_remap_segments(avl_tree_t *segments)
 }
 
 /*
- * Build a linearized top-level vdev address space for this FIEMAP call.
- * The base for each vdev is the cumulative allocatable size of prior
- * top-level vdevs.
+ * Build the exported FIEMAP physical coordinate for this call by
+ * linearizing top-level vdev address spaces.  The base for each vdev is
+ * the cumulative allocatable size of prior top-level vdevs, yielding a
+ * sortable SPA-local scalar instead of a stable raw device/LBA mapping.
  */
 static void
 zfs_fiemap_compute_vdev_bases(spa_t *spa, zfs_fiemap_t *fm)
@@ -5397,6 +5398,11 @@ zfs_fiemap_fill_next_extent(zfs_fiemap_t *fm, struct fiemap_extent_info *fei,
 	struct fiemap_extent extent;
 	memset(&extent, 0, sizeof (extent));
 	extent.fe_logical = logical_start;
+	/*
+	 * fe_physical exports ZFS's linearized SPA-local coordinate for this
+	 * extent.  The FIEMAP ABI provides one 64-bit physical scalar, not a
+	 * public (vdev, offset) tuple.
+	 */
 	extent.fe_physical = physical_start;
 	extent.fe_length = logical_len;
 	extent.fe_flags = export_flags;
