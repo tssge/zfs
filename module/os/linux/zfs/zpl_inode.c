@@ -854,6 +854,9 @@ zpl_fiemap(struct inode *ip, struct fiemap_extent_info *fei,
 	fstrans_cookie_t cookie;
 	int error = 0;
 
+	if (!S_ISREG(ip->i_mode))
+		return (-EOPNOTSUPP);
+
 	/* Incompatible ZFS-only flags masked out of compatibility check */
 	fei->fi_flags &= ~ZFS_FIEMAP_FLAGS_ZFS;
 
@@ -923,7 +926,6 @@ const struct inode_operations zpl_dir_inode_operations = {
 	},
 	.rename2	= zpl_rename2,
 #endif
-	.fiemap		= zpl_fiemap,
 };
 
 const struct inode_operations zpl_symlink_inode_operations = {
@@ -931,7 +933,6 @@ const struct inode_operations zpl_symlink_inode_operations = {
 	.setattr	= zpl_setattr,
 	.getattr	= zpl_getattr,
 	.listxattr	= zpl_xattr_list,
-	.fiemap		= zpl_fiemap,
 };
 
 const struct inode_operations zpl_special_inode_operations = {

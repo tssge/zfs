@@ -39,8 +39,10 @@
 
 verify_runnable "both"
 
+DIR_FILE="$TESTDIR/fiemap-dir.$$"
+
 log_assert "FIEMAP reports synced extents"
-log_onexit fiemap_cleanup
+log_onexit "rmdir $DIR_FILE 2>/dev/null; fiemap_cleanup"
 
 for recordsize in 4096 8192 16384 32768 65536 131072 ; do
 	log_must zfs set recordsize=$recordsize $TESTPOOL/$TESTFS
@@ -118,5 +120,10 @@ for recordsize in 4096 8192 16384 32768 65536 131072 ; do
 	    -H $((BS*4)):$((BS*2)):1 -D $((BS*6)):$((BS*2)):1
 	fiemap_remove
 done
+
+log_note "Directories are not FIEMAP-capable"
+log_must mkdir $DIR_FILE
+log_mustnot fiemap $DIR_FILE
+log_must rmdir $DIR_FILE
 
 log_pass "FIEMAP extents on disk"
