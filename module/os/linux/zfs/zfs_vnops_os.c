@@ -5069,10 +5069,9 @@ zfs_fiemap_add_dirty(void *arg, uint64_t start, uint64_t size)
 }
 
 /*
- * Pending free extents are marked as holes since they will become holes.
- * FIEMAP_EXTENT_DELALLOC is set to indicate it has not yet been written.  The
- * FIEMAP_EXTENT_UNKNOWN flag must be set when FIEMAP_EXTENT_DELALLOC is set.
- * Free extents are only inserted in to the first extent tree.
+ * Pending free extents have already been logically deallocated from the
+ * file, so report them as current holes.  They are only inserted into the
+ * first extent tree.
  */
 static void
 zfs_fiemap_add_free(void *arg, uint64_t start, uint64_t size)
@@ -5087,13 +5086,11 @@ zfs_fiemap_add_free(void *arg, uint64_t start, uint64_t size)
 
 		for (uint64_t i = start; i < start + size; i += blksz) {
 			zfs_fiemap_add_impl(t, i, blksz, 0, 0, 0,
-			    ZFS_FIEMAP_HOLE | FIEMAP_EXTENT_DELALLOC |
-			    FIEMAP_EXTENT_UNKNOWN);
+			    ZFS_FIEMAP_HOLE);
 		}
 	} else {
 		zfs_fiemap_add_impl(t, start, size, 0, 0, 0,
-		    ZFS_FIEMAP_HOLE | FIEMAP_EXTENT_DELALLOC |
-		    FIEMAP_EXTENT_UNKNOWN | FIEMAP_EXTENT_MERGED);
+		    ZFS_FIEMAP_HOLE | FIEMAP_EXTENT_MERGED);
 	}
 }
 

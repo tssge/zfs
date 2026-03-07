@@ -25,9 +25,9 @@
 #
 # STRATEGY:
 # 	1. Create an assortment of sparse file layouts.
-#	2. Verify the expected delayed allocation extents are reported.
-#	2. Verify the expected logical extents are reported after sync.
-#	3. Repeat for the most common block sizes.
+#	2. Verify pending frees are reported as current logical holes.
+#	3. Verify the expected logical extents are reported after sync.
+#	4. Repeat for the most common block sizes.
 #
 # Legend for ASCII block map:
 # X - Completely filled block
@@ -56,13 +56,7 @@ for recordsize in 4096 8192 16384 32768 65536 131072 ; do
 	fiemap_verify -s -D 0:$BS:1
 	fiemap_free $BS 1
 	fiemap_verify -H 0:$BS:1
-	# Pending free may be reported as an explicit hole, or as a
-	# transient unknown+delalloc extent before sync.
-	if fiemap -h -H 0:$BS:1 $FIEMAP_FILE >/dev/null 2>&1; then
-		fiemap_verify -h -H 0:$BS:1
-	else
-		fiemap_verify -h -F "delalloc,unknown:1"
-	fi
+	fiemap_verify -h -H 0:$BS:1 -F "delalloc,unknown:0"
 	fiemap_verify -s -H 0:$BS:1
 	fiemap_verify -s -h -H 0:$BS:1
 	fiemap_remove
@@ -73,9 +67,7 @@ for recordsize in 4096 8192 16384 32768 65536 131072 ; do
 	fiemap_verify -s -D 0:$((BS*8)):1
 	fiemap_free $BS 8
 	fiemap_verify -H 0:$((BS*8)):1 -F "delalloc,unknown:0"
-	# Pending free extents are reported as delalloc+unknown.
-	# Userspace no longer receives an explicit internal hole marker.
-	fiemap_verify -h -F "delalloc,unknown:1"
+	fiemap_verify -h -H 0:$((BS*8)):1 -F "delalloc,unknown:0"
 	fiemap_verify -s -H 0:$((BS*8)):1
 	fiemap_verify -s -h -H 0:$((BS*8)):1
 	fiemap_remove
@@ -112,16 +104,20 @@ for recordsize in 4096 8192 16384 32768 65536 131072 ; do
 	fiemap_free $BS 5 1
 	fiemap_verify -D 0:$BS:1 -H $BS:$((BS*5)):1 -D $((BS*6)):$BS:1 \
 	    -F "delalloc,unknown:0"
-	fiemap_verify -h -F "delalloc,unknown:1"
+	fiemap_verify -h -D 0:$BS:1 -H $BS:$((BS*5)):1 -D $((BS*6)):$BS:1 \
+	    -F "delalloc,unknown:0"
 	fiemap_write $BS 3 2
 	fiemap_verify -D 0:$BS:1 -H $BS:$BS:1 -D $((BS*2)):$((BS*3)):1 \
 	    -H $((BS*5)):$BS:1 -D $((BS*6)):$BS:1 -F "delalloc,unknown:1"
-	fiemap_verify -h -F "delalloc,unknown:3"
+	fiemap_verify -h -D 0:$BS:1 -H $BS:$BS:1 -D $((BS*2)):$((BS*3)):1 \
+	    -H $((BS*5)):$BS:1 -D $((BS*6)):$BS:1 -F "delalloc,unknown:1"
 	fiemap_free $BS 1 3
 	fiemap_verify -D 0:$BS:1 -H $BS:$BS:1 -D $((BS*2)):$BS:1 \
 	    -H $((BS*3)):$BS:1 -D $((BS*4)):$BS:1 -H $((BS*5)):$BS:1 \
 	    -D $((BS*6)):$BS:1 -F "delalloc,unknown:2"
-	fiemap_verify -h -F "delalloc,unknown:5"
+	fiemap_verify -h -D 0:$BS:1 -H $BS:$BS:1 -D $((BS*2)):$BS:1 \
+	    -H $((BS*3)):$BS:1 -D $((BS*4)):$BS:1 -H $((BS*5)):$BS:1 \
+	    -D $((BS*6)):$BS:1 -F "delalloc,unknown:2"
 	fiemap_verify -s -D 0:$BS:1 -H $BS:$BS:1 -D $((BS*2)):$BS:1 \
 	    -H $((BS*3)):$BS:1 -D $((BS*4)):$BS:1 -H $((BS*5)):$BS:1 \
 	    -D $((BS*6)):$BS:1 -F "delalloc:0"

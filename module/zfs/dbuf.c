@@ -5460,8 +5460,10 @@ dbuf_add_dirty_map(list_t *list, zfs_range_tree_t *dirty_tree,
 
 /*
  * Generates two non-overlapping range trees which describe pending dirty
- * and free ranges which have not yet been synced to the pool.  The
- * passed syncing_txg will be updated to reflect the first TXG where
+ * data and logical frees which have not yet been synced to the pool.  The
+ * free tree tracks ranges already removed from the file's current mapping,
+ * even though the final block freeing still completes in syncing context.
+ * The passed syncing_txg will be updated to reflect the first TXG where
  * the dnode was potentially dirty.
  */
 int
