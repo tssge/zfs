@@ -41,8 +41,14 @@ verify_runnable "both"
 
 DIR_FILE="$TESTDIR/fiemap-dir.$$"
 
+function fiemap_sync_cleanup
+{
+	rmdir $DIR_FILE 2>/dev/null
+	fiemap_cleanup
+}
+
 log_assert "FIEMAP reports synced extents"
-log_onexit "rmdir $DIR_FILE 2>/dev/null; fiemap_cleanup"
+log_onexit fiemap_sync_cleanup
 
 for recordsize in 4096 8192 16384 32768 65536 131072 ; do
 	log_must zfs set recordsize=$recordsize $TESTPOOL/$TESTFS
