@@ -366,6 +366,14 @@ static unsigned long zfs_fiemap_chunk_limit = 262144;
 static uint_t zfs_fiemap_indirect_prefetch_limit = 32;
 
 /*
+ * Maximum total number of extents across all copy trees.  Limits
+ * memory consumption for pathologically fragmented files.  At ~72
+ * bytes per extent, the default 1M entries caps usage at ~72 MB.
+ * Set to 0 to disable the cap.
+ */
+static unsigned long zfs_fiemap_max_extents = 1048576;
+
+/*
  * Write the bytes to a file.
  *
  *	IN:	zp	- znode of file to be written to
@@ -4606,6 +4614,18 @@ zfs_fiemap_cb(spa_t *spa, zilog_t *zilog, const blkptr_t *bp,
 		fm->fm_chunk_blkid = zb->zb_blkid;
 		return (SET_ERROR(EAGAIN));
 	}
+
+	/* Memory cap — stop the walk without a resume point */
+	if (zfs_fiemap_max_extents > 0) {
+		uint64_t total = 0;
+		for (int i = 0; i < SPA_DVAS_PER_BP; i++)
+			total += avl_numnodes(&fm->fm_extent_trees[i]);
+		if (total >= zfs_fiemap_max_extents) {
+			fm->fm_chunk_blkid = zb->zb_blkid;
+			return (SET_ERROR(EAGAIN));
+		}
+	}
+
 	fm->fm_chunk_count++;
 
 	/*
@@ -5387,6 +5407,21 @@ zfs_fiemap_assemble(struct inode *ip, zfs_fiemap_t *fm)
 				break;
 
 			/*
+			 * Memory cap hit — return a valid truncated
+			 * result instead of resuming into another chunk.
+			 */
+			if (zfs_fiemap_max_extents > 0) {
+				uint64_t total = 0;
+				for (int i = 0; i < SPA_DVAS_PER_BP; i++)
+					total += avl_numnodes(
+					    &fm->fm_extent_trees[i]);
+				if (total >= zfs_fiemap_max_extents) {
+					error = 0;
+					break;
+				}
+			}
+
+			/*
 			 * Chunk limit reached.  Release range lock so
 			 * writers can proceed.  Re-acquire in forward
 			 * order: range lock → dn_struct_rwlock → dn_mtx.
@@ -5710,4 +5745,7 @@ MODULE_PARM_DESC(zfs_fiemap_chunk_limit,
 module_param(zfs_fiemap_indirect_prefetch_limit, uint, 0644);
 MODULE_PARM_DESC(zfs_fiemap_indirect_prefetch_limit,
     "Max indirect blocks to prefetch ahead in FIEMAP walk (0 = disable)");
+module_param(zfs_fiemap_max_extents, ulong, 0644);
+MODULE_PARM_DESC(zfs_fiemap_max_extents,
+    "Max total FIEMAP extents before truncating result (0 = unlimited)");
 #endif
