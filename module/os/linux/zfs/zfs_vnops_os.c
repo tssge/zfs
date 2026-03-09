@@ -4495,6 +4495,49 @@ zfs_fiemap_sat_add(uint64_t a, uint64_t b)
  * linearizing top-level vdev address spaces.  The base for each vdev is
  * the cumulative allocatable size of prior top-level vdevs, yielding a
  * sortable SPA-local scalar instead of a stable raw device/LBA mapping.
+ *
+ * Design rationale — why linearization, and its tradeoffs:
+ *
+ * The FIEMAP ABI provides a single 64-bit fe_physical per extent; there
+ * is no device-id field.  ZFS pools can span many top-level vdevs, each
+ * with its own physical address space.  We linearize by assigning each
+ * vdev a non-overlapping range: vdev 0 starts at 0, vdev 1 at
+ * vdev_0.asize, vdev 2 at vdev_0.asize + vdev_1.asize, and so on.
+ *
+ * This preserves two properties that consumers care about:
+ *
+ *   1. Intra-vdev ordering.  Extents on the same vdev sort by their
+ *      real physical offset.  Tools that sort files by fe_physical for
+ *      sequential I/O (e.g., fclones) get correct seek ordering within
+ *      each device.
+ *
+ *   2. Per-vdev grouping.  All extents on vdev N cluster together in the
+ *      linearized space.  A tool sorting by fe_physical naturally batches
+ *      all I/O to vdev 0 first, then vdev 1, etc. — the optimal access
+ *      pattern for multi-device pools with independent I/O channels.
+ *
+ * The tradeoff is inflated fragment counts.  ZFS distributes writes
+ * across vdevs in ~2 MB stripes (metaslab_aliquot), so logically
+ * contiguous blocks frequently land on different vdevs.  Each vdev
+ * transition breaks physical contiguity in our linearized space,
+ * producing a new extent.  A perfectly healthy 1 GB file on a 3-vdev
+ * pool shows ~512 extents (1 GB / 2 MB aliquot) rather than ~1.  This
+ * inflation is proportional to file_size / metaslab_aliquot regardless
+ * of vdev count, and does not indicate an I/O performance problem —
+ * it reflects the physical reality that data is striped across devices.
+ *
+ * We accept this tradeoff because:
+ *   - Userspace FIEMAP consumers fall into two categories: I/O
+ *     ordering tools (e.g., fclones, platter-walk) that sort by
+ *     fe_physical for sequential access, and fragmentation reporters
+ *     (e.g., filefrag, e4defrag).  Linearization serves both: the
+ *     former get correct seek ordering and per-vdev batching, while
+ *     the latter get a physically truthful (if inflated) extent map.
+ *   - Merging across vdev boundaries would be incorrect: the resulting
+ *     extent would span a physical range that includes addresses
+ *     belonging to a different device.
+ *   - The FIEMAP ABI has no standard mechanism to convey device
+ *     topology.  BTRFS faces the same limitation on multi-device pools.
  */
 static void
 zfs_fiemap_compute_vdev_bases(spa_t *spa, zfs_fiemap_t *fm)
@@ -5524,9 +5567,10 @@ zfs_fiemap_fill_next_extent(zfs_fiemap_t *fm, struct fiemap_extent_info *fei,
 	memset(&extent, 0, sizeof (extent));
 	extent.fe_logical = logical_start;
 	/*
-	 * fe_physical exports ZFS's linearized SPA-local coordinate for this
-	 * extent.  The FIEMAP ABI provides one 64-bit physical scalar, not a
-	 * public (vdev, offset) tuple.
+	 * fe_physical exports ZFS's linearized SPA-local coordinate.
+	 * See zfs_fiemap_compute_vdev_bases() for the linearization
+	 * scheme and its tradeoffs (fragmentation inflation on multi-
+	 * vdev pools).
 	 */
 	extent.fe_physical = physical_start;
 	extent.fe_length = logical_len;
