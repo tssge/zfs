@@ -359,6 +359,13 @@ static unsigned long zfs_delete_blocks = DMU_MAX_DELETEBLKCNT;
 static unsigned long zfs_fiemap_chunk_limit = 262144;
 
 /*
+ * Maximum number of sibling indirect blocks to prefetch ahead of the
+ * current position in zfs_fiemap_visit_indirect().  Modelled after the
+ * bounded prefetch pattern in dmu_traverse.c:traverse_visitbp().
+ */
+static uint_t zfs_fiemap_indirect_prefetch_limit = 32;
+
+/*
  * Write the bytes to a file.
  *
  *	IN:	zp	- znode of file to be written to
@@ -4860,6 +4867,45 @@ zfs_fiemap_cb(spa_t *spa, zilog_t *zilog, const blkptr_t *bp,
 }
 
 /*
+ * Issue a speculative prefetch for an indirect block if it is eligible.
+ * Skips L0 blocks (only metadata needs prefetching), holes, and subtrees
+ * whose L0 range was already processed in a prior chunk.
+ */
+static boolean_t
+zfs_fiemap_prefetch_indirect(spa_t *spa, zfs_fiemap_t *fm,
+    const blkptr_t *bp, const zbookmark_phys_t *zb)
+{
+	arc_flags_t flags = ARC_FLAG_NOWAIT | ARC_FLAG_PREFETCH |
+	    ARC_FLAG_PRESCIENT_PREFETCH;
+
+	if (BP_GET_LEVEL(bp) == 0 || BP_IS_HOLE(bp))
+		return (B_FALSE);
+
+	/* Skip subtrees already fully processed in a prior chunk */
+	if (fm->fm_chunk_blkid > 0) {
+		int epb = BP_GET_LSIZE(bp) >> SPA_BLKPTRSHIFT;
+		uint64_t next_l0 = zb->zb_blkid + 1;
+		boolean_t overflow = B_FALSE;
+
+		for (int l = 0; l < BP_GET_LEVEL(bp); l++) {
+			if (next_l0 > UINT64_MAX / epb) {
+				overflow = B_TRUE;
+				break;
+			}
+			next_l0 *= epb;
+		}
+
+		if (!overflow && next_l0 <= fm->fm_chunk_blkid)
+			return (B_FALSE);
+	}
+
+	(void) arc_read(NULL, spa, bp, NULL, NULL,
+	    ZIO_PRIORITY_ASYNC_READ,
+	    ZIO_FLAG_CANFAIL | ZIO_FLAG_SPECULATIVE, &flags, zb);
+	return (B_TRUE);
+}
+
+/*
  * Recursively walk the indirect block tree for a dnode_phys_t and call
  * the provided callback for all block pointers traversed.
  */
@@ -4905,8 +4951,10 @@ zfs_fiemap_visit_indirect(spa_t *spa, const dnode_phys_t *dnp,
 	if (BP_GET_LEVEL(bp) > 0 && !BP_IS_HOLE(bp)) {
 		arc_flags_t flags = ARC_FLAG_WAIT;
 		blkptr_t *cbp;
-		int epb = BP_GET_LSIZE(bp) >> SPA_BLKPTRSHIFT;
+		int32_t epb = BP_GET_LSIZE(bp) >> SPA_BLKPTRSHIFT;
 		arc_buf_t *buf;
+		int32_t ptidx, pidx;
+		uint32_t prefetchlimit;
 
 		error = arc_read(NULL, spa, bp, arc_getbuf_func, &buf,
 		    ZIO_PRIORITY_ASYNC_READ, ZIO_FLAG_CANFAIL, &flags, zb);
@@ -4914,13 +4962,44 @@ zfs_fiemap_visit_indirect(spa_t *spa, const dnode_phys_t *dnp,
 			return (error);
 
 		cbp = buf->b_data;
-		for (int i = 0; i < epb; i++, cbp++) {
+
+		/*
+		 * Bounded sibling prefetching, modelled after
+		 * traverse_visitbp() in dmu_traverse.c.  Prefetch up
+		 * to zfs_fiemap_indirect_prefetch_limit indirect
+		 * blocks ahead so that the synchronous arc_read for
+		 * the current child hits ARC warm.
+		 *
+		 * pidx:  index of next child to prefetch.
+		 * ptidx: index at which the next batch is triggered.
+		 */
+		ptidx = 0;
+		pidx = 1;
+		prefetchlimit = zfs_fiemap_indirect_prefetch_limit;
+
+		for (int32_t i = 0; i < epb; i++) {
 			zbookmark_phys_t czb;
+
+			if (prefetchlimit && i == ptidx) {
+				for (uint32_t pf = 0; pidx < epb &&
+				    pf < prefetchlimit; pidx++) {
+					SET_BOOKMARK(&czb, zb->zb_objset,
+					    zb->zb_object, zb->zb_level - 1,
+					    zb->zb_blkid * epb + pidx);
+					if (zfs_fiemap_prefetch_indirect(spa,
+					    fm, &cbp[pidx], &czb)) {
+						pf++;
+						if (pf ==
+						    MAX(prefetchlimit / 2, 1))
+							ptidx = pidx;
+					}
+				}
+			}
 
 			SET_BOOKMARK(&czb, zb->zb_objset, zb->zb_object,
 			    zb->zb_level - 1, zb->zb_blkid * epb + i);
-			error = zfs_fiemap_visit_indirect(spa, dnp, cbp, &czb,
-			    func, arg);
+			error = zfs_fiemap_visit_indirect(spa, dnp, &cbp[i],
+			    &czb, func, arg);
 			if (error)
 				break;
 		}
@@ -5628,4 +5707,7 @@ MODULE_PARM_DESC(zfs_delete_blocks, "Delete files larger than N blocks async");
 module_param(zfs_fiemap_chunk_limit, ulong, 0644);
 MODULE_PARM_DESC(zfs_fiemap_chunk_limit,
     "Max L0 blocks per FIEMAP chunk (0 = unlimited)");
+module_param(zfs_fiemap_indirect_prefetch_limit, uint, 0644);
+MODULE_PARM_DESC(zfs_fiemap_indirect_prefetch_limit,
+    "Max indirect blocks to prefetch ahead in FIEMAP walk (0 = disable)");
 #endif
