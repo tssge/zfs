@@ -4462,6 +4462,20 @@ zfs_fiemap_free_remap_segments(avl_tree_t *segments)
 }
 
 /*
+ * Saturating unsigned 64-bit addition — returns UINT64_MAX on overflow
+ * instead of wrapping.  Used in SPA linearization so that overflowing
+ * vdevs cluster at UINT64_MAX rather than aliasing vdev 0.
+ */
+static inline uint64_t
+zfs_fiemap_sat_add(uint64_t a, uint64_t b)
+{
+	uint64_t sum = a + b;
+	if (sum < a)
+		return (UINT64_MAX);
+	return (sum);
+}
+
+/*
  * Build the exported FIEMAP physical coordinate for this call by
  * linearizing top-level vdev address spaces.  The base for each vdev is
  * the cumulative allocatable size of prior top-level vdevs, yielding a
@@ -4497,7 +4511,7 @@ zfs_fiemap_compute_vdev_bases(spa_t *spa, zfs_fiemap_t *fm)
 
 		fm->fm_vdev_bases[vdev] = running;
 		ASSERT3U(UINT64_MAX - running, >=, vd->vdev_asize);
-		running += vd->vdev_asize;
+		running = zfs_fiemap_sat_add(running, vd->vdev_asize);
 	}
 }
 
@@ -4509,7 +4523,7 @@ zfs_fiemap_linearize_physical(zfs_fiemap_t *fm, uint64_t vdev, uint64_t offset)
 		return (offset);
 
 	ASSERT3U(UINT64_MAX - fm->fm_vdev_bases[vdev], >=, offset);
-	return (fm->fm_vdev_bases[vdev] + offset);
+	return (zfs_fiemap_sat_add(fm->fm_vdev_bases[vdev], offset));
 }
 
 static void
